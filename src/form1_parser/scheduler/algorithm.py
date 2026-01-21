@@ -82,6 +82,7 @@ class Stage1Scheduler:
         instructor_rooms: dict | None = None,
         group_buildings: dict | None = None,
         instructor_availability: list[dict] | None = None,
+        nearby_buildings: dict | None = None,
     ) -> None:
         """Initialize the Stage 1 scheduler.
 
@@ -91,9 +92,10 @@ class Stage1Scheduler:
             instructor_rooms: Dictionary from instructor-rooms.json
             group_buildings: Dictionary from group-buildings.json
             instructor_availability: List from instructor-availability.json
+            nearby_buildings: Dictionary from nearby-buildings.json
         """
         self.instructor_availability = instructor_availability
-        self.conflict_tracker = ConflictTracker(instructor_availability)
+        self.conflict_tracker = ConflictTracker(instructor_availability, nearby_buildings)
         self.room_manager = RoomManager(
             rooms_csv, subject_rooms, instructor_rooms, group_buildings
         )
@@ -234,9 +236,14 @@ class Stage1Scheduler:
             )
             assignments.append(assignment)
 
-            # Reserve resources
+            # Reserve resources (including building address for gap constraint)
             self.conflict_tracker.reserve(
-                stream.instructor, stream.groups, day, slot, WeekType.BOTH
+                stream.instructor,
+                stream.groups,
+                day,
+                slot,
+                WeekType.BOTH,
+                building_address=room.address,
             )
             self.room_manager.reserve_room(room, day, slot, WeekType.BOTH)
 
@@ -289,6 +296,7 @@ class Stage1Scheduler:
         instructor_conflicts = 0
         group_conflicts = 0
         room_conflicts = 0
+        building_gap_conflicts = 0
         consecutive_slot_failures = 0
         primary_days_exhausted = False
 
@@ -344,10 +352,12 @@ class Stage1Scheduler:
                 # Verify rooms are available for all slots (preferring same room)
                 rooms_available = True
                 first_room = None
+                rooms_for_slots: list[Room] = []
                 for i in range(hours):
                     if first_room and self.room_manager.is_room_available(
                         first_room.name, day, slot + i, WeekType.BOTH
                     ):
+                        rooms_for_slots.append(first_room)
                         continue  # Same room available
                     room = self.room_manager.find_room(stream, day, slot + i)
                     if not room:
@@ -359,10 +369,38 @@ class Stage1Scheduler:
                             f"on {day.value} slot {slot + i}"
                         )
                         break
+                    rooms_for_slots.append(room)
                     if first_room is None:
                         first_room = room
 
-                if rooms_available:
+                if not rooms_available:
+                    continue
+
+                # Check building gap constraint for each slot
+                building_gap_ok = True
+                for i in range(hours):
+                    current_slot = slot + i
+                    room_address = rooms_for_slots[i].address if i < len(rooms_for_slots) else None
+                    if room_address:
+                        (
+                            gap_ok,
+                            conflicting_group,
+                            gap_details,
+                        ) = self.conflict_tracker.check_building_gap_constraint(
+                            stream.groups,
+                            day,
+                            current_slot,
+                            room_address,
+                            WeekType.BOTH,
+                        )
+                        if not gap_ok:
+                            building_gap_ok = False
+                            building_gap_conflicts += 1
+                            last_conflict_reason = UnscheduledReason.BUILDING_GAP_REQUIRED
+                            last_conflict_details = gap_details
+                            break
+
+                if building_gap_ok:
                     return (day, slot)
 
         # No position found - return the most informative failure reason
@@ -380,6 +418,8 @@ class Stage1Scheduler:
             summary_parts.append(f"group conflicts: {group_conflicts}")
         if room_conflicts > 0:
             summary_parts.append(f"room unavailable: {room_conflicts}")
+        if building_gap_conflicts > 0:
+            summary_parts.append(f"building gap required: {building_gap_conflicts}")
         if consecutive_slot_failures > 0:
             summary_parts.append(
                 f"insufficient consecutive slots: {consecutive_slot_failures}"
@@ -441,6 +481,7 @@ def create_scheduler(
     instructor_rooms_json: Path | str | None = None,
     group_buildings_json: Path | str | None = None,
     instructor_availability_json: Path | str | None = None,
+    nearby_buildings_json: Path | str | None = None,
 ) -> Stage1Scheduler:
     """Factory function to create a Stage1Scheduler with loaded reference data.
 
@@ -450,6 +491,7 @@ def create_scheduler(
         instructor_rooms_json: Path to instructor-rooms.json file (optional)
         group_buildings_json: Path to group-buildings.json file (optional)
         instructor_availability_json: Path to instructor-availability.json file (optional)
+        nearby_buildings_json: Path to nearby-buildings.json file (optional)
 
     Returns:
         Configured Stage1Scheduler instance
@@ -486,10 +528,18 @@ def create_scheduler(
             with open(instructor_availability_path, encoding="utf-8") as f:
                 instructor_availability = json.load(f)
 
+    nearby_buildings = None
+    if nearby_buildings_json:
+        nearby_buildings_path = Path(nearby_buildings_json)
+        if nearby_buildings_path.exists():
+            with open(nearby_buildings_path, encoding="utf-8") as f:
+                nearby_buildings = json.load(f)
+
     return Stage1Scheduler(
         rooms_path,
         subject_rooms,
         instructor_rooms,
         group_buildings,
         instructor_availability,
+        nearby_buildings,
     )

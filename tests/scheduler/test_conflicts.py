@@ -388,3 +388,125 @@ class TestConsecutiveSlotsReason:
         assert reason == UnscheduledReason.GROUP_CONFLICT
         assert "Slot 2/2" in details
         assert "Group1" in details
+
+
+class TestBuildingGapConstraint:
+    """Tests for building change time constraint (C-7.3)."""
+
+    @pytest.fixture
+    def nearby_buildings(self):
+        """Sample nearby buildings configuration."""
+        return {
+            "groups": [
+                {"addresses": ["Building A", "Building B"]},
+                {"addresses": ["Building C", "Building D"]},
+            ]
+        }
+
+    def test_same_building_no_gap_required(self, nearby_buildings):
+        """Test that same building doesn't require a gap."""
+        tracker = ConflictTracker(nearby_buildings=nearby_buildings)
+
+        # Reserve slot 1 in Building A
+        tracker.reserve("Instructor", ["Group-11"], Day.MONDAY, 1, WeekType.BOTH, "Building A")
+
+        # Check if slot 2 in Building A is allowed (should be OK)
+        is_valid, _, _ = tracker.check_building_gap_constraint(
+            ["Group-11"], Day.MONDAY, 2, "Building A", WeekType.BOTH
+        )
+        assert is_valid is True
+
+    def test_nearby_buildings_no_gap_required(self, nearby_buildings):
+        """Test that nearby buildings don't require a gap."""
+        tracker = ConflictTracker(nearby_buildings=nearby_buildings)
+
+        # Reserve slot 1 in Building A
+        tracker.reserve("Instructor", ["Group-11"], Day.MONDAY, 1, WeekType.BOTH, "Building A")
+
+        # Check if slot 2 in Building B (nearby) is allowed (should be OK)
+        is_valid, _, _ = tracker.check_building_gap_constraint(
+            ["Group-11"], Day.MONDAY, 2, "Building B", WeekType.BOTH
+        )
+        assert is_valid is True
+
+    def test_different_buildings_require_gap(self, nearby_buildings):
+        """Test that non-nearby buildings require a gap slot."""
+        tracker = ConflictTracker(nearby_buildings=nearby_buildings)
+
+        # Reserve slot 1 in Building A
+        tracker.reserve("Instructor", ["Group-11"], Day.MONDAY, 1, WeekType.BOTH, "Building A")
+
+        # Check if slot 2 in Building C (NOT nearby A) is allowed (should FAIL)
+        is_valid, conflicting_group, details = tracker.check_building_gap_constraint(
+            ["Group-11"], Day.MONDAY, 2, "Building C", WeekType.BOTH
+        )
+        assert is_valid is False
+        assert conflicting_group == "Group-11"
+        assert "gap" in details.lower()
+
+    def test_gap_slot_allows_different_buildings(self, nearby_buildings):
+        """Test that with a gap slot, different buildings are allowed."""
+        tracker = ConflictTracker(nearby_buildings=nearby_buildings)
+
+        # Reserve slot 1 in Building A
+        tracker.reserve("Instructor", ["Group-11"], Day.MONDAY, 1, WeekType.BOTH, "Building A")
+
+        # Check if slot 3 in Building C is allowed (gap at slot 2, should be OK)
+        is_valid, _, _ = tracker.check_building_gap_constraint(
+            ["Group-11"], Day.MONDAY, 3, "Building C", WeekType.BOTH
+        )
+        assert is_valid is True
+
+    def test_no_nearby_buildings_config(self):
+        """Test behavior when no nearby buildings config is provided."""
+        tracker = ConflictTracker(nearby_buildings=None)
+
+        # Reserve slot 1 in Building A
+        tracker.reserve("Instructor", ["Group-11"], Day.MONDAY, 1, WeekType.BOTH, "Building A")
+
+        # Without config, different buildings should require gap
+        is_valid, _, _ = tracker.check_building_gap_constraint(
+            ["Group-11"], Day.MONDAY, 2, "Building C", WeekType.BOTH
+        )
+        assert is_valid is False
+
+    def test_multiple_groups_one_has_conflict(self, nearby_buildings):
+        """Test that if any group has a building conflict, it's detected."""
+        tracker = ConflictTracker(nearby_buildings=nearby_buildings)
+
+        # Only Group-11 has a class in Building A
+        tracker.reserve("Instructor", ["Group-11"], Day.MONDAY, 1, WeekType.BOTH, "Building A")
+
+        # Check for multiple groups including Group-11
+        is_valid, conflicting_group, _ = tracker.check_building_gap_constraint(
+            ["Group-11", "Group-13"], Day.MONDAY, 2, "Building C", WeekType.BOTH
+        )
+        assert is_valid is False
+        assert conflicting_group == "Group-11"
+
+    def test_different_day_no_conflict(self, nearby_buildings):
+        """Test that building gap constraint is per-day."""
+        tracker = ConflictTracker(nearby_buildings=nearby_buildings)
+
+        # Reserve Monday slot 1 in Building A
+        tracker.reserve("Instructor", ["Group-11"], Day.MONDAY, 1, WeekType.BOTH, "Building A")
+
+        # Check Tuesday slot 2 in Building C (different day, should be OK)
+        is_valid, _, _ = tracker.check_building_gap_constraint(
+            ["Group-11"], Day.TUESDAY, 2, "Building C", WeekType.BOTH
+        )
+        assert is_valid is True
+
+    def test_building_tracking_stored_correctly(self, nearby_buildings):
+        """Test that building info is stored and retrieved correctly."""
+        tracker = ConflictTracker(nearby_buildings=nearby_buildings)
+
+        tracker.reserve("Instructor", ["Group-11"], Day.MONDAY, 1, WeekType.BOTH, "Building A")
+
+        # Retrieve building info
+        building = tracker.get_group_building_at_slot("Group-11", Day.MONDAY, 1, WeekType.BOTH)
+        assert building == "Building A"
+
+        # Non-existent slot should return None
+        building = tracker.get_group_building_at_slot("Group-11", Day.MONDAY, 2, WeekType.BOTH)
+        assert building is None

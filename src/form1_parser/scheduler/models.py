@@ -34,6 +34,7 @@ class UnscheduledReason(str, Enum):
     INSTRUCTOR_UNAVAILABLE = "instructor_unavailable"
     NO_CONSECUTIVE_SLOTS = "no_consecutive_slots"
     ALL_SLOTS_EXHAUSTED = "all_slots_exhausted"
+    BUILDING_GAP_REQUIRED = "building_gap_required"
 
 
 @dataclass

@@ -240,6 +240,7 @@ DEFAULT_SUBJECT_ROOMS_JSON = Path("data/reference/subject-rooms.json")
 DEFAULT_INSTRUCTOR_ROOMS_JSON = Path("data/reference/instructor-rooms.json")
 DEFAULT_GROUP_BUILDINGS_JSON = Path("data/reference/group-buildings.json")
 DEFAULT_INSTRUCTOR_AVAILABILITY_JSON = Path("data/reference/instructor-availability.json")
+DEFAULT_NEARBY_BUILDINGS_JSON = Path("data/reference/nearby-buildings.json")
 
 
 @app.command()
@@ -272,6 +273,10 @@ def schedule(
         Optional[Path],
         typer.Option("--instructor-availability", help="Path to instructor-availability.json file"),
     ] = None,
+    nearby_buildings: Annotated[
+        Optional[Path],
+        typer.Option("--nearby-buildings", help="Path to nearby-buildings.json file"),
+    ] = None,
     verbose: Annotated[
         bool,
         typer.Option("-v", "--verbose", help="Show detailed output"),
@@ -288,6 +293,7 @@ def schedule(
     instructor_rooms_path = instructor_rooms or DEFAULT_INSTRUCTOR_ROOMS_JSON
     group_buildings_path = group_buildings or DEFAULT_GROUP_BUILDINGS_JSON
     instructor_availability_path = instructor_availability or DEFAULT_INSTRUCTOR_AVAILABILITY_JSON
+    nearby_buildings_path = nearby_buildings or DEFAULT_NEARBY_BUILDINGS_JSON
 
     # Validate rooms.csv exists
     if not rooms_path.exists():
@@ -312,6 +318,7 @@ def schedule(
             instructor_rooms_path if instructor_rooms_path.exists() else None,
             group_buildings_path if group_buildings_path.exists() else None,
             instructor_availability_path if instructor_availability_path.exists() else None,
+            nearby_buildings_path if nearby_buildings_path.exists() else None,
         )
         result = scheduler.schedule(streams)
 
