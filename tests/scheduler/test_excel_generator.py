@@ -4,12 +4,10 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import pytest
 from openpyxl import load_workbook
 
 from form1_parser.scheduler.excel_generator import (
     DAYS_ORDER,
-    DAY_ROW_RANGES,
     GeneratorConfig,
     ScheduleExcelGenerator,
     generate_schedule_excel,
@@ -449,10 +447,22 @@ class TestSheetLayout:
 
         ws = wb.worksheets[0]
 
-        # Check day names are present in correct rows
+        # Check day names are present in the sheet (rows are dynamic based on slots)
         strings = generator.strings
-        assert ws["A10"].value == strings["days"]["monday"]
-        assert ws["A17"].value == strings["days"]["tuesday"]
-        assert ws["A24"].value == strings["days"]["wednesday"]
-        assert ws["A31"].value == strings["days"]["thursday"]
-        assert ws["A38"].value == strings["days"]["friday"]
+
+        # Collect all day name values from column A (starting from row 10)
+        day_names_found = []
+        for row in range(10, 100):  # Check rows 10-99
+            cell_value = ws[f"A{row}"].value
+            if cell_value and cell_value in strings["days"].values():
+                day_names_found.append(cell_value)
+
+        # Verify all day names are present in correct order
+        expected_days = [
+            strings["days"]["monday"],
+            strings["days"]["tuesday"],
+            strings["days"]["wednesday"],
+            strings["days"]["thursday"],
+            strings["days"]["friday"],
+        ]
+        assert day_names_found == expected_days

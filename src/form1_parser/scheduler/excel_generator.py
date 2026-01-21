@@ -9,6 +9,8 @@ from typing import Literal
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, Side
 
+from .constants import YEAR_SHIFT_MAP, Shift, get_slot_time_range, get_slots_for_shift
+
 # Localization strings
 STRINGS_KAZ = {
     "university": "Батыс Қазақстан инновациялық-технологиялық университеті",
@@ -101,16 +103,6 @@ MERGED_CELLS = [
     "A47:C47",  # Date line
 ]
 
-# Default time slots for first shift (slots 1-7)
-DEFAULT_TIME_SLOTS = {
-    1: "09:00-09:50",
-    2: "10:00-10:50",
-    3: "11:00-11:50",
-    4: "12:00-12:50",
-    5: "13:00-13:50",
-    6: "14:00-14:50",
-    7: "15:00-15:50",
-}
 
 
 @dataclass
@@ -122,6 +114,20 @@ class GeneratorConfig:
     week_type: Literal["odd", "even"]
     first_slot: int = 1
     slots_per_day: int = 7
+
+
+def get_shift_config(year: int) -> tuple[int, int]:
+    """Get shift-based slot configuration for a year.
+
+    Args:
+        year: Student year (1-5).
+
+    Returns:
+        Tuple of (first_slot, slots_count) for the year's shift.
+    """
+    shift = YEAR_SHIFT_MAP.get(year, Shift.FIRST)
+    slots = get_slots_for_shift(shift)
+    return slots[0], len(slots)
 
 
 class ScheduleExcelGenerator:
@@ -288,6 +294,72 @@ class ScheduleExcelGenerator:
 
         return grid
 
+    def get_used_slots(
+        self, grid: dict[str, dict[int, dict[str, dict | None]]]
+    ) -> dict[str, list[int]]:
+        """Get slots that have at least one assignment per day.
+
+        Args:
+            grid: Schedule grid from build_schedule_grid.
+
+        Returns:
+            Dictionary mapping day to list of slots with assignments.
+        """
+        used: dict[str, list[int]] = {}
+        for day, slots in grid.items():
+            used[day] = [
+                slot
+                for slot, groups in slots.items()
+                if any(a is not None for a in groups.values())
+            ]
+        return used
+
+    def get_slots_to_display(
+        self, grid: dict[str, dict[int, dict[str, dict | None]]]
+    ) -> list[int]:
+        """Get sorted list of slots that have at least one assignment across all days.
+
+        Args:
+            grid: Schedule grid from build_schedule_grid.
+
+        Returns:
+            Sorted list of slot numbers to display.
+        """
+        used_slots = self.get_used_slots(grid)
+        all_slots: set[int] = set()
+        for slots in used_slots.values():
+            all_slots.update(slots)
+        return sorted(all_slots)
+
+    def calculate_row_ranges(
+        self, slots_to_display: list[int]
+    ) -> tuple[dict[str, tuple[int, int]], dict[int, int]]:
+        """Calculate dynamic row ranges based on slots to display.
+
+        Args:
+            slots_to_display: List of slot numbers to show.
+
+        Returns:
+            Tuple of (day_row_ranges, slot_to_row mapping).
+            day_row_ranges: {day: (start_row, end_row)}
+            slot_to_row: {slot: row_number}
+        """
+        num_slots = len(slots_to_display) if slots_to_display else 1
+        start_row = 10  # First data row after headers
+
+        day_ranges: dict[str, tuple[int, int]] = {}
+        for i, day in enumerate(DAYS_ORDER):
+            day_start = start_row + i * num_slots
+            day_end = day_start + num_slots - 1
+            day_ranges[day] = (day_start, day_end)
+
+        # Create slot to row offset mapping (within a day)
+        slot_to_row: dict[int, int] = {}
+        for i, slot in enumerate(slots_to_display):
+            slot_to_row[slot] = i
+
+        return day_ranges, slot_to_row
+
     def format_cell_content(self, assignment: dict) -> str:
         """Format assignment for cell display.
 
@@ -297,7 +369,12 @@ class ScheduleExcelGenerator:
         Returns:
             Formatted multi-line string for cell.
         """
-        subject = assignment["subject"].upper()
+        stream_type = assignment.get("stream_type", "lecture")
+        if stream_type == "lecture":
+            subject = assignment["subject"].upper()
+        else:
+            # Keep original case for practical/lab
+            subject = assignment["subject"]
         instructor = assignment["instructor"]
         # Clean instructor name
         instructor = instructor.replace("а.о.", "").replace("қ.проф.", "").strip()
@@ -326,49 +403,95 @@ class ScheduleExcelGenerator:
         sheets = self.group_into_sheets(groups)
 
         for sheet_groups in sheets:
+            # Build grid first to determine which slots are used
+            grid = self.build_schedule_grid(assignments, sheet_groups)
+            slots_to_display = self.get_slots_to_display(grid)
+
+            # If no assignments, skip this sheet
+            if not slots_to_display:
+                continue
+
+            # Calculate dynamic row ranges
+            day_ranges, slot_to_row = self.calculate_row_ranges(slots_to_display)
+
             # Sheet name: comma-separated group names, sanitized for Excel
             sheet_name = self.sanitize_sheet_name(", ".join(sheet_groups))
             ws = wb.create_sheet(title=sheet_name)
-            self.setup_sheet(ws, sheet_groups)
 
-            # Build and fill schedule
-            grid = self.build_schedule_grid(assignments, sheet_groups)
-            self.fill_schedule(ws, grid, sheet_groups)
+            # Setup sheet with dynamic layout
+            self.setup_sheet(ws, sheet_groups, slots_to_display, day_ranges)
+
+            # Fill schedule data
+            self.fill_schedule(ws, grid, sheet_groups, day_ranges, slot_to_row)
+
+        # Ensure at least one sheet exists (openpyxl requires this)
+        if not wb.worksheets:
+            wb.create_sheet(title="Empty")
 
         return wb
 
-    def setup_sheet(self, ws, groups: list[str]) -> None:
+    def setup_sheet(
+        self,
+        ws,
+        groups: list[str],
+        slots_to_display: list[int],
+        day_ranges: dict[str, tuple[int, int]],
+    ) -> None:
         """Set up sheet structure with headers and formatting.
 
         Args:
             ws: Worksheet to set up.
             groups: Group names for this sheet.
+            slots_to_display: List of slot numbers to display.
+            day_ranges: Dynamic row ranges for each day.
         """
         # Set column widths
         for col, width in COLUMN_WIDTHS.items():
             ws.column_dimensions[col].width = width
 
-        # Set row heights
+        # Calculate total data rows
+        num_slots = len(slots_to_display)
+        total_days = len(DAYS_ORDER)
+        last_data_row = 9 + (num_slots * total_days)  # Row 9 is header
+
+        # Set row heights dynamically
         ws.row_dimensions[9].height = 30.0
-        for row in range(10, 45):
+        for row in range(10, last_data_row + 1):
             ws.row_dimensions[row].height = 55.0
 
-        # Merge cells
-        for merge_range in MERGED_CELLS:
+        # Merge static header cells
+        static_merges = [
+            "A2:F2",  # University name
+            "A6:F6",  # Schedule title
+            "A8:F8",  # Course/year
+        ]
+        for merge_range in static_merges:
             ws.merge_cells(merge_range)
 
+        # Merge day columns dynamically
+        for day in DAYS_ORDER:
+            start_row, end_row = day_ranges[day]
+            ws.merge_cells(f"A{start_row}:A{end_row}")
+
+        # Footer rows (agreement text) - positioned after schedule data
+        footer_row1 = last_data_row + 2
+        footer_row2 = footer_row1 + 1
+        ws.merge_cells(f"A{footer_row1}:C{footer_row1}")
+        ws.merge_cells(f"A{footer_row2}:C{footer_row2}")
+
         # Setup headers
-        self.setup_headers(ws, groups)
+        self.setup_headers(ws, groups, footer_row1)
 
         # Setup schedule grid structure
-        self.setup_grid(ws)
+        self.setup_grid(ws, slots_to_display, day_ranges)
 
-    def setup_headers(self, ws, groups: list[str]) -> None:
-        """Set up header rows (1-9).
+    def setup_headers(self, ws, groups: list[str], footer_row: int) -> None:
+        """Set up header rows (1-9) and footer.
 
         Args:
             ws: Worksheet.
             groups: Group names for column headers.
+            footer_row: Row number for agreement text.
         """
         # Row 2: University name
         ws["A2"] = self.strings["university"]
@@ -430,23 +553,30 @@ class ScheduleExcelGenerator:
             ws[f"{col}9"].alignment = ALIGN_CENTER
             ws[f"{col}9"].border = THIN_BORDER
 
-        # Row 46-47: Agreement text
-        ws["A46"] = self.strings["agreement"]
-        ws["A46"].font = FONT_APPROVAL
-        ws["A46"].alignment = Alignment(horizontal="left", vertical="center")
+        # Footer: Agreement text (dynamic row)
+        ws[f"A{footer_row}"] = self.strings["agreement"]
+        ws[f"A{footer_row}"].font = FONT_APPROVAL
+        ws[f"A{footer_row}"].alignment = Alignment(horizontal="left", vertical="center")
 
-        ws["A47"] = self.strings["date_line"]
-        ws["A47"].font = FONT_APPROVAL
-        ws["A47"].alignment = Alignment(horizontal="left", vertical="center")
+        ws[f"A{footer_row + 1}"] = self.strings["date_line"]
+        ws[f"A{footer_row + 1}"].font = FONT_APPROVAL
+        ws[f"A{footer_row + 1}"].alignment = Alignment(horizontal="left", vertical="center")
 
-    def setup_grid(self, ws) -> None:
-        """Set up the schedule grid (rows 10-44).
+    def setup_grid(
+        self,
+        ws,
+        slots_to_display: list[int],
+        day_ranges: dict[str, tuple[int, int]],
+    ) -> None:
+        """Set up the schedule grid with dynamic slots.
 
         Args:
             ws: Worksheet.
+            slots_to_display: List of slot numbers to display.
+            day_ranges: Dynamic row ranges for each day.
         """
         for day in DAYS_ORDER:
-            start_row, end_row = DAY_ROW_RANGES[day]
+            start_row, end_row = day_ranges[day]
 
             # Day name in first cell of merged range
             ws[f"A{start_row}"] = self.strings["days"][day]
@@ -458,9 +588,9 @@ class ScheduleExcelGenerator:
                 ws[f"A{row}"].border = THIN_BORDER
 
             # Time slots and slot numbers
-            for i, row in enumerate(range(start_row, end_row + 1)):
-                slot_num = self.config.first_slot + i
-                time_range = DEFAULT_TIME_SLOTS.get(slot_num, "")
+            for i, slot_num in enumerate(slots_to_display):
+                row = start_row + i
+                time_range = get_slot_time_range(slot_num)
 
                 # Time column (B)
                 ws[f"B{row}"] = time_range
@@ -485,6 +615,8 @@ class ScheduleExcelGenerator:
         ws,
         grid: dict[str, dict[int, dict[str, dict | None]]],
         groups: list[str],
+        day_ranges: dict[str, tuple[int, int]],
+        slot_to_row: dict[int, int],
     ) -> None:
         """Fill schedule cells with assignment data.
 
@@ -492,24 +624,30 @@ class ScheduleExcelGenerator:
             ws: Worksheet.
             grid: Schedule grid from build_schedule_grid.
             groups: Group names in order.
+            day_ranges: Dynamic row ranges for each day.
+            slot_to_row: Mapping from slot number to row offset.
         """
         group_cols = ["D", "E", "F"]
 
         for day in DAYS_ORDER:
-            start_row, _ = DAY_ROW_RANGES[day]
+            start_row, _ = day_ranges[day]
 
             if day not in grid:
                 continue
 
-            for i, slot in enumerate(sorted(grid[day].keys())):
-                row = start_row + i
+            for slot, slot_groups in grid[day].items():
+                # Only fill slots that are in our display list
+                if slot not in slot_to_row:
+                    continue
+
+                row = start_row + slot_to_row[slot]
 
                 for j, group in enumerate(groups):
                     if j >= len(group_cols):
                         break
 
                     col = group_cols[j]
-                    assignment = grid[day][slot].get(group)
+                    assignment = slot_groups.get(group)
 
                     if assignment:
                         ws[f"{col}{row}"] = self.format_cell_content(assignment)
@@ -555,10 +693,13 @@ def generate_schedule_excel(
     for lang in languages:
         for yr in years:
             for wt in week_types:
+                first_slot, slots_per_day = get_shift_config(yr)
                 config = GeneratorConfig(
                     language=lang,  # type: ignore
                     year=yr,
                     week_type=wt,  # type: ignore
+                    first_slot=first_slot,
+                    slots_per_day=slots_per_day,
                 )
                 generator = ScheduleExcelGenerator(config)
 

@@ -151,6 +151,7 @@ class Assignment:
     room: str
     room_address: str
     week_type: WeekType = WeekType.BOTH
+    stream_type: str = "lecture"  # "lecture", "practical", or "lab"
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
@@ -166,6 +167,7 @@ class Assignment:
             "room": self.room,
             "room_address": self.room_address,
             "week_type": self.week_type.value,
+            "stream_type": self.stream_type,
         }
 
 

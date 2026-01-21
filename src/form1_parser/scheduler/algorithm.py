@@ -242,6 +242,7 @@ class Stage1Scheduler:
                 room=room.name,
                 room_address=room.address,
                 week_type=WeekType.BOTH,  # Same position for odd and even weeks
+                stream_type="lecture",
             )
             assignments.append(assignment)
 
@@ -706,6 +707,7 @@ class Stage2Scheduler:
                 room=a.get("room", ""),
                 room_address=a.get("room_address", ""),
                 week_type=WeekType(a.get("week_type", "both")),
+                stream_type=a.get("stream_type", "lecture"),
             )
             assignments.append(assignment)
         return assignments
@@ -810,6 +812,7 @@ class Stage2Scheduler:
                 room=room.name,
                 room_address=room.address,
                 week_type=WeekType.BOTH,
+                stream_type=stream.stream_type,
             )
             assignments.append(assignment)
 
