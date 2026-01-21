@@ -18,7 +18,7 @@ STUDY_FORM_PATTERN = r"/[уг]/"
 GROUP_NAME_PATTERN = r"^[А-ЯӘҒҚҢӨҰҮІа-яәғқңөұүі]+-\d{2}"
 
 # Instructor detection markers
-INSTRUCTOR_MARKERS = ["проф", "а.о.", "с.п.", "асс", "доц"]
+INSTRUCTOR_MARKERS = ["проф", "а.о.", "с.п.", "асс", "доц", "д.", "д.", "prof.", "prof"]
 
 # Data start markers
 DATA_START_MARKERS = ["1", "2 семестр", "2семестр"]
