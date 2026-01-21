@@ -117,6 +117,7 @@ class PracticalStream:
     stream_type: str  # "practical" or "lab"
     lecture_dependency: LectureDependency | None = None
     complexity_score: float = 0.0
+    instructor_available_slots: int = 0  # Used for priority sorting
 
     @property
     def max_hours(self) -> int:

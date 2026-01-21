@@ -724,19 +724,22 @@ class ConflictTracker:
         day: Day,
         slot: int,
         week_type: WeekType = WeekType.BOTH,
+        max_windows: int = 3,
     ) -> tuple[bool, str | None]:
-        """Check if adding a class would create a second window for any group.
+        """Check if adding a class would exceed max allowed windows for any group.
 
-        Each group can have at most ONE window per day.
+        Windows (gaps) are allowed during early scheduling stages and will be
+        filled in later stages. Default max is 3 windows per day.
 
         Args:
             groups: List of group names
             day: Day of the week
             slot: Proposed slot for the new class
             week_type: Week type to check
+            max_windows: Maximum allowed windows per day (default 3)
 
         Returns:
-            Tuple of (would_create_second_window, conflicting_group)
+            Tuple of (would_exceed_max_windows, conflicting_group)
         """
         for group in groups:
             existing_slots = self.get_group_slots_on_day(group, day, week_type)
@@ -751,7 +754,7 @@ class ConflictTracker:
             # Count windows after adding
             new_windows = self.count_windows(new_slots)
 
-            if new_windows > 1:
+            if new_windows > max_windows:
                 return (True, group)
 
         return (False, None)

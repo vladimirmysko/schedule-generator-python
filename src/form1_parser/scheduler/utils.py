@@ -408,6 +408,7 @@ def calculate_complexity_score(
     Higher score = more constrained = should be scheduled first.
 
     Formula:
+    - Instructor availability: Fewer slots = higher priority (x50)
     - Lecture day constraint: Later day = more constrained (x20)
     - Lecture end slot: Later slot = more constrained (x2)
     - Group count: More groups = harder to schedule (x15)
@@ -433,6 +434,13 @@ def calculate_complexity_score(
 
     score = 0.0
 
+    # Instructor availability (fewer slots = more constrained = higher priority)
+    # Max slots per shift is ~25 (5 days x 5 slots), invert so fewer = higher score
+    max_slots = 25
+    available = stream.instructor_available_slots
+    if available > 0:
+        score += (max_slots - min(available, max_slots)) * 50
+
     # Lecture day constraint (later = more constrained)
     score += day_order.get(lecture_day, 0) * 20
     score += lecture_end_slot * 2
@@ -453,6 +461,7 @@ def calculate_complexity_score(
 def filter_stage2_practicals(
     streams: list[dict],
     lecture_dependency_map: dict[str, dict[str, LectureDependency]],
+    instructor_availability: list[dict] | None = None,
 ) -> list[PracticalStream]:
     """Filter and convert streams to PracticalStream objects for Stage 2.
 
@@ -466,6 +475,7 @@ def filter_stage2_practicals(
     Args:
         streams: List of stream dictionaries from parsed JSON
         lecture_dependency_map: Map from build_lecture_dependency_map()
+        instructor_availability: List of instructor availability records
 
     Returns:
         List of PracticalStream objects ready for scheduling
@@ -524,6 +534,11 @@ def filter_stage2_practicals(
         instructor = stream.get("instructor", "")
         shift = determine_shift(groups)
 
+        # Calculate instructor available slots for priority sorting
+        available_slots = calculate_instructor_available_slots(
+            instructor, shift, instructor_availability
+        )
+
         practical_stream = PracticalStream(
             id=stream.get("id", ""),
             subject=subject,
@@ -538,6 +553,7 @@ def filter_stage2_practicals(
             stream_type=stream_type,
             lecture_dependency=lecture_dep,
             complexity_score=0.0,  # Will be set later
+            instructor_available_slots=available_slots,
         )
 
         # Calculate complexity score

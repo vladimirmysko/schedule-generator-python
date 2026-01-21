@@ -628,7 +628,9 @@ class Stage2Scheduler:
         lecture_dep_map = build_lecture_dependency_map(stage1_assignments)
 
         # 3. Filter practicals for Stage 2
-        practicals = filter_stage2_practicals(streams, lecture_dep_map)
+        practicals = filter_stage2_practicals(
+            streams, lecture_dep_map, self.instructor_availability
+        )
 
         # 4. Sort by complexity (most constrained first)
         sorted_practicals = sort_practicals_by_complexity(practicals)
@@ -713,18 +715,19 @@ class Stage2Scheduler:
         return assignments
 
     def _schedule_practical(
-        self, stream: PracticalStream
+        self, stream: PracticalStream, remaining_hours: int | None = None
     ) -> list[Assignment] | UnscheduledStream:
         """Schedule a single practical stream.
 
         Args:
             stream: PracticalStream to schedule
+            remaining_hours: If specified, schedule only this many hours (for split scheduling)
 
         Returns:
             List of Assignment objects if scheduled,
             or UnscheduledStream with failure reason
         """
-        hours = stream.max_hours
+        hours = remaining_hours if remaining_hours is not None else stream.max_hours
         if hours == 0:
             return []
 
@@ -753,6 +756,30 @@ class Stage2Scheduler:
             day, start_slot, is_extreme = position_result
         else:
             reason, details = position_result
+            # Try splitting: schedule fewer hours, then recurse for remainder
+            # NOTE: Do NOT split flexible subjects (PE) - they require consecutive hours
+            # in the same location (gym) to avoid unnecessary building transfers
+            is_flexible = stream.subject in FLEXIBLE_SCHEDULE_SUBJECTS
+            if hours > 1 and not is_flexible:
+                for partial_hours in range(hours - 1, 0, -1):
+                    partial_result = self._find_best_position(
+                        stream, lecture_day, lecture_end_slot, partial_hours
+                    )
+                    if isinstance(partial_result[0], Day):
+                        partial_day, partial_slot, partial_extreme = partial_result
+                        partial_assignments = self._create_assignments(
+                            stream, partial_day, partial_slot, partial_hours
+                        )
+                        if isinstance(partial_assignments, list):
+                            # Recursively schedule remaining hours
+                            remaining = hours - partial_hours
+                            rest_result = self._schedule_practical(stream, remaining)
+                            if isinstance(rest_result, list):
+                                return partial_assignments + rest_result
+                            # If rest fails, we already scheduled partial - return what we have
+                            # plus info about what couldn't be scheduled
+                        break
+
             return UnscheduledStream(
                 stream_id=stream.id,
                 subject=stream.subject,
@@ -764,6 +791,28 @@ class Stage2Scheduler:
                 details=details,
             )
 
+        # Successfully found a position - create assignments
+        return self._create_assignments(stream, day, start_slot, hours)
+
+    def _create_assignments(
+        self,
+        stream: PracticalStream,
+        day: Day,
+        start_slot: int,
+        hours: int,
+    ) -> list[Assignment] | UnscheduledStream:
+        """Create assignments for consecutive hours on a single day.
+
+        Args:
+            stream: PracticalStream to schedule
+            day: Day to schedule on
+            start_slot: Starting slot number
+            hours: Number of consecutive hours to schedule
+
+        Returns:
+            List of Assignment objects if successful,
+            or UnscheduledStream if room allocation fails
+        """
         assignments = []
 
         # Find rooms for all consecutive slots
@@ -890,8 +939,12 @@ class Stage2Scheduler:
                         continue
 
                 positions_tried += 1
+                # For PE (flexible subjects) with 3+ hours, use extreme mode (3-hour limit)
+                # even on different days, since there's no lecture hour to accumulate
+                use_extreme = is_flexible and hours >= 3
+
                 passed, reason, details = self._passes_all_checks(
-                    stream, day, slot, hours, extreme=False
+                    stream, day, slot, hours, extreme=use_extreme
                 )
 
                 if passed:
