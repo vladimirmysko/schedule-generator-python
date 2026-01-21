@@ -3,7 +3,7 @@
 from collections import defaultdict
 
 from .constants import get_slot_start_time
-from .models import Day, WeekType
+from .models import Day, UnscheduledReason, WeekType
 from .utils import clean_instructor_name
 
 
@@ -114,20 +114,23 @@ class ConflictTracker:
         if self._is_weekly_unavailable(instructor, day, slot):
             return False
 
+        # Clean instructor name to handle different prefixes (а.о., с.п., etc.)
+        cleaned = clean_instructor_name(instructor)
+
         # Check exact match
-        if instructor in self.instructor_schedule[(day, slot, week_type)]:
+        if cleaned in self.instructor_schedule[(day, slot, week_type)]:
             return False
 
         # If checking BOTH weeks, also check ODD and EVEN separately
         if week_type == WeekType.BOTH:
-            if instructor in self.instructor_schedule[(day, slot, WeekType.ODD)]:
+            if cleaned in self.instructor_schedule[(day, slot, WeekType.ODD)]:
                 return False
-            if instructor in self.instructor_schedule[(day, slot, WeekType.EVEN)]:
+            if cleaned in self.instructor_schedule[(day, slot, WeekType.EVEN)]:
                 return False
 
         # If checking specific week, also check BOTH
         if week_type in (WeekType.ODD, WeekType.EVEN):
-            if instructor in self.instructor_schedule[(day, slot, WeekType.BOTH)]:
+            if cleaned in self.instructor_schedule[(day, slot, WeekType.BOTH)]:
                 return False
 
         return True
@@ -210,7 +213,9 @@ class ConflictTracker:
             slot: Slot number
             week_type: Week type to reserve (ODD, EVEN, or BOTH)
         """
-        self.instructor_schedule[(day, slot, week_type)].add(instructor)
+        # Clean instructor name to handle different prefixes (а.о., с.п., etc.)
+        cleaned = clean_instructor_name(instructor)
+        self.instructor_schedule[(day, slot, week_type)].add(cleaned)
 
         for group in groups:
             self.group_schedule[(day, slot, week_type)].add(group)
@@ -271,3 +276,117 @@ class ConflictTracker:
             ):
                 return False
         return True
+
+    def check_slot_availability_reason(
+        self,
+        instructor: str,
+        groups: list[str],
+        day: Day,
+        slot: int,
+        week_type: WeekType = WeekType.BOTH,
+    ) -> tuple[bool, UnscheduledReason | None, str]:
+        """Check slot availability and return specific failure reason.
+
+        Args:
+            instructor: Instructor name
+            groups: List of group names
+            day: Day of the week
+            slot: Slot number
+            week_type: Week type to check (ODD, EVEN, or BOTH)
+
+        Returns:
+            Tuple of (is_available, reason, details)
+            - is_available: True if slot is available
+            - reason: UnscheduledReason if not available, None if available
+            - details: Human-readable description of the conflict
+        """
+        # Check weekly unavailability from instructor-availability.json
+        if self._is_weekly_unavailable(instructor, day, slot):
+            return (
+                False,
+                UnscheduledReason.INSTRUCTOR_UNAVAILABLE,
+                f"Instructor '{instructor}' is unavailable on {day.value} slot {slot} "
+                f"per weekly availability schedule",
+            )
+
+        # Check instructor conflict
+        if not self.is_instructor_available(instructor, day, slot, week_type):
+            return (
+                False,
+                UnscheduledReason.INSTRUCTOR_CONFLICT,
+                f"Instructor '{instructor}' already scheduled on {day.value} slot {slot}",
+            )
+
+        # Check group conflicts
+        for group in groups:
+            # Check exact match
+            if group in self.group_schedule[(day, slot, week_type)]:
+                return (
+                    False,
+                    UnscheduledReason.GROUP_CONFLICT,
+                    f"Group '{group}' already scheduled on {day.value} slot {slot}",
+                )
+
+            # If checking BOTH weeks, also check ODD and EVEN separately
+            if week_type == WeekType.BOTH:
+                if group in self.group_schedule[(day, slot, WeekType.ODD)]:
+                    return (
+                        False,
+                        UnscheduledReason.GROUP_CONFLICT,
+                        f"Group '{group}' already scheduled on {day.value} slot {slot} "
+                        f"(odd week)",
+                    )
+                if group in self.group_schedule[(day, slot, WeekType.EVEN)]:
+                    return (
+                        False,
+                        UnscheduledReason.GROUP_CONFLICT,
+                        f"Group '{group}' already scheduled on {day.value} slot {slot} "
+                        f"(even week)",
+                    )
+
+            # If checking specific week, also check BOTH
+            if week_type in (WeekType.ODD, WeekType.EVEN):
+                if group in self.group_schedule[(day, slot, WeekType.BOTH)]:
+                    return (
+                        False,
+                        UnscheduledReason.GROUP_CONFLICT,
+                        f"Group '{group}' already scheduled on {day.value} slot {slot} "
+                        f"(both weeks)",
+                    )
+
+        return (True, None, "")
+
+    def check_consecutive_slots_reason(
+        self,
+        instructor: str,
+        groups: list[str],
+        day: Day,
+        start_slot: int,
+        num_slots: int,
+        week_type: WeekType = WeekType.BOTH,
+    ) -> tuple[bool, UnscheduledReason | None, str]:
+        """Check consecutive slots availability and return specific failure reason.
+
+        Args:
+            instructor: Instructor name
+            groups: List of group names
+            day: Day of the week
+            start_slot: Starting slot number
+            num_slots: Number of consecutive slots needed
+            week_type: Week type to check (ODD, EVEN, or BOTH)
+
+        Returns:
+            Tuple of (is_available, reason, details)
+        """
+        for i in range(num_slots):
+            slot = start_slot + i
+            is_available, reason, details = self.check_slot_availability_reason(
+                instructor, groups, day, slot, week_type
+            )
+            if not is_available:
+                return (
+                    False,
+                    reason,
+                    f"Slot {i + 1}/{num_slots}: {details}",
+                )
+        return (True, None, "")

@@ -104,23 +104,23 @@ class RoomManager:
         # Remove common prefixes
         prefixes = [
             # Russian academic prefixes
-            r"^а\.о\.\s*",           # а.о. (assistant)
-            r"^а\.о\s+",             # а.о  (with space)
-            r"^с\.п\.\.*\s*",        # с.п. and с.п.. (senior lecturer, handles typo)
-            r"^с\.п\s+",             # с.п  (with space)
-            r"^доцент\s*",           # доцент (associate professor - full)
-            r"^д\.\s*",              # д. (abbreviated доцент)
-            r"^асс\.проф\.\s*",      # асс.проф. (assistant professor)
-            r"^қ\.проф\.\s*",        # қ.проф. (Kazakh: associate professor)
-            r"^проф\.\s*",           # проф. (professor - abbreviated)
-            r"^профессор\s*",        # профессор (professor - full)
-            r"^ст\.преп\.\s*",       # ст.преп. (senior lecturer)
-            r"^преподаватель\s*",    # преподаватель (lecturer - full)
-            r"^п\.\s*",              # п. (abbreviated преподаватель)
-            r"^о\.\s*",              # о. (unknown, found in data)
+            r"^а\.о\.\s*",  # а.о. (assistant)
+            r"^а\.о\s+",  # а.о  (with space)
+            r"^с\.п\.\.*\s*",  # с.п. and с.п.. (senior lecturer, handles typo)
+            r"^с\.п\s+",  # с.п  (with space)
+            r"^доцент\s*",  # доцент (associate professor - full)
+            r"^д\.\s*",  # д. (abbreviated доцент)
+            r"^асс\.проф\.\s*",  # асс.проф. (assistant professor)
+            r"^қ\.проф\.\s*",  # қ.проф. (Kazakh: associate professor)
+            r"^проф\.\s*",  # проф. (professor - abbreviated)
+            r"^профессор\s*",  # профессор (professor - full)
+            r"^ст\.преп\.\s*",  # ст.преп. (senior lecturer)
+            r"^преподаватель\s*",  # преподаватель (lecturer - full)
+            r"^п\.\s*",  # п. (abbreviated преподаватель)
+            r"^о\.\s*",  # о. (unknown, found in data)
             # English prefixes
-            r"^prof\.\s*",           # prof. (professor)
-            r"^Dr\s+",               # Dr (doctor)
+            r"^prof\.\s*",  # prof. (professor)
+            r"^Dr\s+",  # Dr (doctor)
         ]
         cleaned = name.strip()
         for prefix in prefixes:
@@ -250,6 +250,13 @@ class RoomManager:
     def _parse_group_year(self, group_name: str) -> int:
         """Extract year from group name.
 
+        The first digit of the two-digit number indicates the year:
+        - 1x (11, 13, 15...) = 1st year
+        - 2x (21, 23, 25...) = 2nd year
+        - 3x (31, 33, 35...) = 3rd year
+        - 4x (41, 43, 45...) = 4th year
+        - 5x (51, 53, 55...) = 5th year
+
         Args:
             group_name: Group name like "АРХ-21 О"
 
@@ -260,9 +267,10 @@ class RoomManager:
         if not match:
             return 0
         number = int(match.group(1))
-        last_digit = number % 10
-        year_map = {1: 1, 3: 2, 5: 3, 7: 4, 9: 5}
-        return year_map.get(last_digit, 0)
+        # For two-digit numbers, the first digit indicates the year
+        if 10 <= number <= 59:
+            return number // 10
+        return 0
 
     def _get_group_building_rooms(self, groups: list[str]) -> list[Room]:
         """Get preferred rooms based on group building preferences.
@@ -359,13 +367,20 @@ class RoomManager:
     def _calculate_buffer(self, stream_size: int) -> int:
         """Calculate capacity buffer based on stream size.
 
-        Buffer: 50% for small (<30), 20% for large (>100), linear between.
+        Buffer is added to room capacity when no exact-fit room is available.
+        Buffer: 50% for small (<=30), 20% for large (>=100), linear between.
+
+        Example: 30 students, rooms with 18, 16, 14, 12 seats.
+        Buffer = 30 * 0.5 = 15
+        Effective capacities: 18+15=33, 16+15=31, 14+15=29, 12+15=27
+        Rooms with 18 and 16 seats qualify (33>=30, 31>=30).
+        Select 18-seat room (largest among qualifying).
 
         Args:
             stream_size: Number of students in the stream
 
         Returns:
-            Capacity buffer (number of extra seats that can be tolerated)
+            Capacity buffer to add to room capacity
         """
         if stream_size <= 30:
             return int(stream_size * 0.5)
@@ -426,11 +441,13 @@ class RoomManager:
             # Return smallest room that fits (minimize waste)
             return min(suitable, key=lambda r: r.capacity)
 
-        # Fallback: use capacity buffer for rooms that are slightly too small
+        # Fallback: add buffer to room capacity for rooms that are slightly too small
+        # Example: 30 students, 18-seat room, buffer=15 -> 18+15=33 >= 30 ✓
         buffer = self._calculate_buffer(student_count)
-        min_required = student_count - buffer
 
-        buffered = [r for r in available if r.capacity >= min_required]
+        buffered = [
+            r for r in available if (r.capacity + buffer) >= student_count
+        ]
         if buffered:
             # Return largest available room (closest to needed capacity)
             return max(buffered, key=lambda r: r.capacity)
@@ -461,14 +478,20 @@ class RoomManager:
         Returns:
             Suitable Room or None if not found
         """
-        # 1. Subject-specific rooms
+        # 1. Subject-specific rooms (strict - no fallback if defined)
         if stream.subject in self.subject_rooms:
             allowed = self._get_subject_rooms(stream.subject, "lecture")
-            room = self._find_available_by_capacity(
-                allowed, stream.student_count, day, slot, week_type, allow_special=True
-            )
-            if room:
-                return room
+            if allowed:
+                # Subject has specific rooms for lectures - must use them, no fallback
+                room = self._find_available_by_capacity(
+                    allowed,
+                    stream.student_count,
+                    day,
+                    slot,
+                    week_type,
+                    allow_special=True,
+                )
+                return room  # Returns room or None, no fallback to general pool
 
         # 2. Instructor room preferences
         clean_name = self._clean_instructor_name(stream.instructor)

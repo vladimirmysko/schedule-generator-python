@@ -25,6 +25,17 @@ class WeekType(str, Enum):
     BOTH = "both"
 
 
+class UnscheduledReason(str, Enum):
+    """Reason why a stream could not be scheduled."""
+
+    INSTRUCTOR_CONFLICT = "instructor_conflict"
+    GROUP_CONFLICT = "group_conflict"
+    NO_ROOM_AVAILABLE = "no_room_available"
+    INSTRUCTOR_UNAVAILABLE = "instructor_unavailable"
+    NO_CONSECUTIVE_SLOTS = "no_consecutive_slots"
+    ALL_SLOTS_EXHAUSTED = "all_slots_exhausted"
+
+
 @dataclass
 class TimeSlot:
     """A time slot for scheduling."""
@@ -63,6 +74,8 @@ class LectureStream:
     hours_even_week: int
     shift: Shift
     sheet: str
+    instructor_available_slots: int = 0  # Available slots for this instructor
+    subject_prac_lab_hours: int = 0  # Total practical + lab hours for subject
 
     @property
     def max_hours(self) -> int:
@@ -116,6 +129,33 @@ class Assignment:
 
 
 @dataclass
+class UnscheduledStream:
+    """Information about a stream that could not be scheduled."""
+
+    stream_id: str
+    subject: str
+    instructor: str
+    groups: list[str]
+    student_count: int
+    shift: Shift
+    reason: UnscheduledReason
+    details: str = ""  # Additional context about why scheduling failed
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "stream_id": self.stream_id,
+            "subject": self.subject,
+            "instructor": self.instructor,
+            "groups": self.groups,
+            "student_count": self.student_count,
+            "shift": self.shift.value,
+            "reason": self.reason.value,
+            "details": self.details,
+        }
+
+
+@dataclass
 class ScheduleStatistics:
     """Statistics for the generated schedule."""
 
@@ -140,6 +180,7 @@ class ScheduleResult:
     stage: int
     assignments: list[Assignment] = field(default_factory=list)
     unscheduled_stream_ids: list[str] = field(default_factory=list)
+    unscheduled_streams: list[UnscheduledStream] = field(default_factory=list)
     statistics: ScheduleStatistics = field(default_factory=ScheduleStatistics)
 
     @property
@@ -161,5 +202,6 @@ class ScheduleResult:
             "total_unscheduled": self.total_unscheduled,
             "assignments": [a.to_dict() for a in self.assignments],
             "unscheduled_stream_ids": self.unscheduled_stream_ids,
+            "unscheduled_streams": [s.to_dict() for s in self.unscheduled_streams],
             "statistics": self.statistics.to_dict(),
         }

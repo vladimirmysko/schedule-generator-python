@@ -28,8 +28,15 @@ TIME_SLOTS = [
     {"slot": 13, "start": "21:00", "end": "21:50", "shift": Shift.SECOND},
 ]
 
-# Stage 1: Only Monday, Tuesday, Wednesday
+# Stage 1: Primary days are Monday, Tuesday, Wednesday
 STAGE1_DAYS = ["monday", "tuesday", "wednesday"]
+
+# Stage 1: Overflow days when primary days are exhausted
+STAGE1_OVERFLOW_DAYS = ["thursday", "friday"]
+
+# Subjects with flexible day scheduling (can be scheduled Mon-Fri with low priority)
+# These subjects are scheduled last to fill remaining slots after other subjects
+FLEXIBLE_SCHEDULE_SUBJECTS = ["Дене шынықтыру"]
 
 # Minimum groups for Stage 1 lectures
 STAGE1_MIN_GROUPS = 2

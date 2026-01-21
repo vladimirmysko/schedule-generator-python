@@ -3,7 +3,7 @@
 import pytest
 
 from form1_parser.scheduler.conflicts import ConflictTracker
-from form1_parser.scheduler.models import Day, WeekType
+from form1_parser.scheduler.models import Day, UnscheduledReason, WeekType
 
 
 class TestConflictTracker:
@@ -269,3 +269,122 @@ class TestInstructorWeeklyAvailability:
         assert not tracker.is_instructor_available("Биниязов А.М.", Day.MONDAY, 2)
         # Биниязов available Friday slot 1
         assert tracker.is_instructor_available("Биниязов А.М.", Day.FRIDAY, 1)
+
+
+class TestSlotAvailabilityReason:
+    """Tests for check_slot_availability_reason method."""
+
+    def test_returns_available_when_no_conflicts(self):
+        tracker = ConflictTracker()
+        is_available, reason, details = tracker.check_slot_availability_reason(
+            "Instructor1", ["Group1"], Day.MONDAY, 1
+        )
+        assert is_available is True
+        assert reason is None
+        assert details == ""
+
+    def test_returns_instructor_conflict_reason(self):
+        tracker = ConflictTracker()
+        tracker.reserve("Instructor1", ["Group2"], Day.MONDAY, 1)
+
+        is_available, reason, details = tracker.check_slot_availability_reason(
+            "Instructor1", ["Group1"], Day.MONDAY, 1
+        )
+
+        assert is_available is False
+        assert reason == UnscheduledReason.INSTRUCTOR_CONFLICT
+        assert "Instructor1" in details
+
+    def test_returns_group_conflict_reason(self):
+        tracker = ConflictTracker()
+        tracker.reserve("Instructor2", ["Group1"], Day.MONDAY, 1)
+
+        is_available, reason, details = tracker.check_slot_availability_reason(
+            "Instructor1", ["Group1"], Day.MONDAY, 1
+        )
+
+        assert is_available is False
+        assert reason == UnscheduledReason.GROUP_CONFLICT
+        assert "Group1" in details
+
+    def test_returns_instructor_unavailable_reason(self):
+        availability = [
+            {
+                "name": "Instructor1",
+                "weekly_unavailable": {"monday": ["09:00"]},
+            }
+        ]
+        tracker = ConflictTracker(instructor_availability=availability)
+
+        is_available, reason, details = tracker.check_slot_availability_reason(
+            "Instructor1", ["Group1"], Day.MONDAY, 1
+        )
+
+        assert is_available is False
+        assert reason == UnscheduledReason.INSTRUCTOR_UNAVAILABLE
+        assert "Instructor1" in details
+
+    def test_instructor_conflict_detected_before_group(self):
+        """Instructor conflict should be detected before group conflict."""
+        tracker = ConflictTracker()
+        # Reserve with same instructor and same group
+        tracker.reserve("Instructor1", ["Group1"], Day.MONDAY, 1)
+
+        is_available, reason, details = tracker.check_slot_availability_reason(
+            "Instructor1", ["Group1"], Day.MONDAY, 1
+        )
+
+        assert is_available is False
+        # Should return instructor conflict, not group conflict
+        assert reason == UnscheduledReason.INSTRUCTOR_CONFLICT
+
+
+class TestConsecutiveSlotsReason:
+    """Tests for check_consecutive_slots_reason method."""
+
+    def test_returns_available_when_all_slots_free(self):
+        tracker = ConflictTracker()
+        is_available, reason, details = tracker.check_consecutive_slots_reason(
+            "Instructor1", ["Group1"], Day.MONDAY, 1, 2
+        )
+
+        assert is_available is True
+        assert reason is None
+        assert details == ""
+
+    def test_returns_conflict_for_first_slot(self):
+        tracker = ConflictTracker()
+        tracker.reserve("Instructor1", ["Group2"], Day.MONDAY, 1)
+
+        is_available, reason, details = tracker.check_consecutive_slots_reason(
+            "Instructor1", ["Group1"], Day.MONDAY, 1, 2
+        )
+
+        assert is_available is False
+        assert reason == UnscheduledReason.INSTRUCTOR_CONFLICT
+        assert "Slot 1/2" in details
+
+    def test_returns_conflict_for_second_slot(self):
+        tracker = ConflictTracker()
+        tracker.reserve("Instructor1", ["Group2"], Day.MONDAY, 2)  # Second slot
+
+        is_available, reason, details = tracker.check_consecutive_slots_reason(
+            "Instructor1", ["Group1"], Day.MONDAY, 1, 2
+        )
+
+        assert is_available is False
+        assert reason == UnscheduledReason.INSTRUCTOR_CONFLICT
+        assert "Slot 2/2" in details
+
+    def test_returns_group_conflict_for_consecutive_slot(self):
+        tracker = ConflictTracker()
+        tracker.reserve("Instructor2", ["Group1"], Day.MONDAY, 2)  # Second slot has group
+
+        is_available, reason, details = tracker.check_consecutive_slots_reason(
+            "Instructor1", ["Group1"], Day.MONDAY, 1, 2
+        )
+
+        assert is_available is False
+        assert reason == UnscheduledReason.GROUP_CONFLICT
+        assert "Slot 2/2" in details
+        assert "Group1" in details

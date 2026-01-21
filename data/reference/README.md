@@ -458,6 +458,7 @@ Or with class-type-specific restrictions:
 | Field       | Type  | Description                                      |
 | ----------- | ----- | ------------------------------------------------ |
 | `locations` | array | Rooms allowed for any class type of this subject |
+| `lecture`   | array | Rooms allowed only for lecture sessions  |
 | `practice`  | array | Rooms allowed only for practice/lab sessions     |
 
 **Note**: If only `practice` is specified, lectures have no room restrictions.

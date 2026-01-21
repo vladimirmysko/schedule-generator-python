@@ -187,9 +187,7 @@ class ScheduleExcelGenerator:
             return second_digit % 2 == 0
         return False
 
-    def filter_assignments(
-        self, data: dict
-    ) -> tuple[list[dict], list[str]]:
+    def filter_assignments(self, data: dict) -> tuple[list[dict], list[str]]:
         """Filter assignments by configuration criteria.
 
         Args:
@@ -202,9 +200,7 @@ class ScheduleExcelGenerator:
 
         # Filter by week type
         filtered = [
-            a
-            for a in assignments
-            if a["week_type"] in (self.config.week_type, "both")
+            a for a in assignments if a["week_type"] in (self.config.week_type, "both")
         ]
 
         # Collect groups matching target year
@@ -252,7 +248,7 @@ class ScheduleExcelGenerator:
             Sanitized sheet name (max 31 chars).
         """
         # Replace invalid characters
-        invalid_chars = r'/\*?:[]'
+        invalid_chars = r"/\*?:[]"
         for char in invalid_chars:
             name = name.replace(char, "")
         return name[:31]
@@ -308,9 +304,7 @@ class ScheduleExcelGenerator:
         room_info = f"{assignment['room']}, {assignment['room_address']}"
         return f"{subject}\n{instructor}\n{room_info}"
 
-    def create_workbook(
-        self, assignments: list[dict], groups: list[str]
-    ) -> Workbook:
+    def create_workbook(self, assignments: list[dict], groups: list[str]) -> Workbook:
         """Create Excel workbook with schedule.
 
         Args:

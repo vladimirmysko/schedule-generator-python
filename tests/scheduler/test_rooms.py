@@ -374,11 +374,11 @@ class TestRoomManagerGroupBuildings:
     def test_parse_group_year(self, temp_rooms_csv):
         """Test year parsing from group names."""
         manager = RoomManager(temp_rooms_csv)
-        assert manager._parse_group_year("АРХ-21 О") == 1
-        assert manager._parse_group_year("АРХ-23 О") == 2
-        assert manager._parse_group_year("АРХ-25 О") == 3
-        assert manager._parse_group_year("АРХ-27 О") == 4
-        assert manager._parse_group_year("АРХ-29 О") == 5
+        assert manager._parse_group_year("АРХ-11 О") == 1
+        assert manager._parse_group_year("АРХ-21 О") == 2
+        assert manager._parse_group_year("АРХ-31 О") == 3
+        assert manager._parse_group_year("АРХ-41 О") == 4
+        assert manager._parse_group_year("АРХ-51 О") == 5
 
 
 class TestRoomManagerExclusiveBuildings:
