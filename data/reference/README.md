@@ -458,6 +458,7 @@ Or with class-type-specific restrictions:
 | Field       | Type  | Description                                      |
 | ----------- | ----- | ------------------------------------------------ |
 | `locations` | array | Rooms allowed for any class type of this subject |
+| `lecture`   | array | Rooms allowed only for lecture sessions  |
 | `practice`  | array | Rooms allowed only for practice/lab sessions     |
 
 **Note**: If only `practice` is specified, lectures have no room restrictions.
@@ -490,7 +491,7 @@ Or with class-type-specific restrictions:
 
 ## group-buildings.json
 
-Defines building preferences for specialty groups by year. These are **soft preferences** that the scheduler tries to honor, but subject-specific room requirements take priority.
+Defines building preferences for specialty groups. These are **soft preferences** that the scheduler tries to honor, but subject-specific room requirements take priority.
 
 ### Format
 
@@ -501,7 +502,6 @@ Object keyed by specialty prefix.
 ```json
 {
   "SPECIALTY": {
-    "years": [1, 2, 3, ...],
     "addresses": [
       { "address": "building address" }
     ]
@@ -514,7 +514,6 @@ Or with specific room restrictions:
 ```json
 {
   "SPECIALTY": {
-    "years": [1, 2, 3, ...],
     "addresses": [
       { "address": "building address", "rooms": ["room1", "room2"] }
     ]
@@ -545,24 +544,16 @@ Extracted from group names like "ВЕТ-31 О", "СТР-21 ОК":
 ```json
 {
   "ВЕТ": {
-    "years": [2, 3, 4, 5],
     "addresses": [{ "address": "ул. Жангир хана, 51/4" }]
   },
   "СТР": {
-    "years": [2, 3],
     "addresses": [{ "address": "ул. Чапаева 69" }]
   },
   "АРХ": {
-    "years": [2, 3, 4],
     "addresses": [{ "address": "ул. Чапаева 69" }]
   },
   "ЮР": {
-    "years": [2, 3],
     "addresses": [{ "address": "ул. Победа, 137/1" }]
-  },
-  "ТБПП": {
-    "years": [1, 2, 3, 4],
-    "addresses": [{ "address": "ул. Ихсанова, 44/1", "rooms": ["108"] }]
   }
 }
 ```

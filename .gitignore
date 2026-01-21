@@ -35,3 +35,6 @@ htmlcov/
 # Environment variables
 .env
 .env.local
+
+# Output
+output/

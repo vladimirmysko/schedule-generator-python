@@ -10,6 +10,12 @@ from rich.table import Table
 
 from .exporters import get_exporter
 from .parser import Form1Parser
+from .scheduler import (
+    create_scheduler,
+    export_schedule_json,
+    generate_schedule_excel,
+    load_parsed_data,
+)
 
 app = typer.Typer(
     name="form1-parser",
@@ -226,6 +232,217 @@ def _show_detailed_results(result) -> None:
             subjects_table.add_row("...", "...", "...", "...", "...", "...")
 
         console.print(subjects_table)
+
+
+# Default paths for reference data
+DEFAULT_ROOMS_CSV = Path("data/reference/rooms.csv")
+DEFAULT_SUBJECT_ROOMS_JSON = Path("data/reference/subject-rooms.json")
+DEFAULT_INSTRUCTOR_ROOMS_JSON = Path("data/reference/instructor-rooms.json")
+DEFAULT_GROUP_BUILDINGS_JSON = Path("data/reference/group-buildings.json")
+DEFAULT_INSTRUCTOR_AVAILABILITY_JSON = Path("data/reference/instructor-availability.json")
+DEFAULT_NEARBY_BUILDINGS_JSON = Path("data/reference/nearby-buildings.json")
+
+
+@app.command()
+def schedule(
+    input_file: Annotated[
+        Path,
+        typer.Argument(help="Parsed JSON file from form1-parser parse command"),
+    ],
+    output: Annotated[
+        Optional[Path],
+        typer.Option("-o", "--output", help="Output JSON file path"),
+    ] = None,
+    rooms_csv: Annotated[
+        Optional[Path],
+        typer.Option("--rooms", help="Path to rooms.csv file"),
+    ] = None,
+    subject_rooms: Annotated[
+        Optional[Path],
+        typer.Option("--subject-rooms", help="Path to subject-rooms.json file"),
+    ] = None,
+    instructor_rooms: Annotated[
+        Optional[Path],
+        typer.Option("--instructor-rooms", help="Path to instructor-rooms.json file"),
+    ] = None,
+    group_buildings: Annotated[
+        Optional[Path],
+        typer.Option("--group-buildings", help="Path to group-buildings.json file"),
+    ] = None,
+    instructor_availability: Annotated[
+        Optional[Path],
+        typer.Option("--instructor-availability", help="Path to instructor-availability.json file"),
+    ] = None,
+    nearby_buildings: Annotated[
+        Optional[Path],
+        typer.Option("--nearby-buildings", help="Path to nearby-buildings.json file"),
+    ] = None,
+    verbose: Annotated[
+        bool,
+        typer.Option("-v", "--verbose", help="Show detailed output"),
+    ] = False,
+) -> None:
+    """Generate Stage 1 schedule for multi-group lectures."""
+    if not input_file.exists():
+        console.print(f"[bold red]Error:[/bold red] File not found: {input_file}")
+        raise typer.Exit(1)
+
+    # Use default paths if not provided
+    rooms_path = rooms_csv or DEFAULT_ROOMS_CSV
+    subject_rooms_path = subject_rooms or DEFAULT_SUBJECT_ROOMS_JSON
+    instructor_rooms_path = instructor_rooms or DEFAULT_INSTRUCTOR_ROOMS_JSON
+    group_buildings_path = group_buildings or DEFAULT_GROUP_BUILDINGS_JSON
+    instructor_availability_path = instructor_availability or DEFAULT_INSTRUCTOR_AVAILABILITY_JSON
+    nearby_buildings_path = nearby_buildings or DEFAULT_NEARBY_BUILDINGS_JSON
+
+    # Validate rooms.csv exists
+    if not rooms_path.exists():
+        console.print(f"[bold red]Error:[/bold red] Rooms file not found: {rooms_path}")
+        raise typer.Exit(1)
+
+    with console.status("[bold green]Loading parsed data..."):
+        data = load_parsed_data(input_file)
+
+    streams = data.get("streams", [])
+    if not streams:
+        console.print("[bold yellow]Warning:[/bold yellow] No streams found in input file")
+        raise typer.Exit(1)
+
+    console.print(f"\n[bold]Schedule Generation for:[/bold] {input_file.name}")
+    console.print(f"  Total streams in input: {len(streams)}")
+
+    with console.status("[bold green]Creating schedule..."):
+        scheduler = create_scheduler(
+            rooms_path,
+            subject_rooms_path if subject_rooms_path.exists() else None,
+            instructor_rooms_path if instructor_rooms_path.exists() else None,
+            group_buildings_path if group_buildings_path.exists() else None,
+            instructor_availability_path if instructor_availability_path.exists() else None,
+            nearby_buildings_path if nearby_buildings_path.exists() else None,
+        )
+        result = scheduler.schedule(streams)
+
+    # Show summary
+    console.print(f"\n[bold]Stage 1 Schedule Results:[/bold]")
+    console.print(f"  Total assignments: {result.total_assigned}")
+    console.print(f"  Unscheduled streams: {result.total_unscheduled}")
+
+    # Show statistics
+    if result.statistics.by_day:
+        console.print(f"\n[bold]Distribution by day:[/bold]")
+        for day, count in sorted(result.statistics.by_day.items()):
+            console.print(f"  {day.capitalize()}: {count}")
+
+    if result.statistics.by_shift:
+        console.print(f"\n[bold]Distribution by shift:[/bold]")
+        for shift, count in sorted(result.statistics.by_shift.items()):
+            console.print(f"  {shift.capitalize()}: {count}")
+
+    if verbose and result.statistics.room_utilization:
+        console.print(f"\n[bold]Room utilization by address:[/bold]")
+        for address, count in sorted(
+            result.statistics.room_utilization.items(), key=lambda x: -x[1]
+        ):
+            console.print(f"  {address}: {count}")
+
+    if verbose and result.unscheduled_stream_ids:
+        console.print(f"\n[bold yellow]Unscheduled streams ({len(result.unscheduled_stream_ids)}):[/bold yellow]")
+        for stream_id in result.unscheduled_stream_ids[:10]:
+            console.print(f"  [yellow]- {stream_id}[/yellow]")
+        if len(result.unscheduled_stream_ids) > 10:
+            console.print(f"  [yellow]... and {len(result.unscheduled_stream_ids) - 10} more[/yellow]")
+
+    # Export if output path provided
+    if output:
+        output_path = output if output.suffix == ".json" else output.with_suffix(".json")
+        with console.status(f"[bold green]Exporting to {output_path}..."):
+            export_schedule_json(result, output_path)
+        console.print(f"\n[bold green]✓[/bold green] Schedule exported to: {output_path}")
+    else:
+        # Default output path
+        default_output = Path("output/schedule.json")
+        with console.status(f"[bold green]Exporting to {default_output}..."):
+            export_schedule_json(result, default_output)
+        console.print(f"\n[bold green]✓[/bold green] Schedule exported to: {default_output}")
+
+
+@app.command("generate-excel")
+def generate_excel(
+    input_file: Annotated[
+        Path,
+        typer.Argument(help="Schedule JSON file"),
+    ],
+    output_dir: Annotated[
+        Optional[Path],
+        typer.Option("-o", "--output", help="Output directory for Excel files"),
+    ] = None,
+    language: Annotated[
+        Optional[str],
+        typer.Option("--language", "-l", help="Language filter: 'kaz' or 'rus'"),
+    ] = None,
+    year: Annotated[
+        Optional[int],
+        typer.Option("--year", "-y", help="Year filter: 1, 2, 3, or 4"),
+    ] = None,
+    week_type: Annotated[
+        Optional[str],
+        typer.Option("--week-type", "-w", help="Week type filter: 'odd' or 'even'"),
+    ] = None,
+    verbose: Annotated[
+        bool,
+        typer.Option("-v", "--verbose", help="Show detailed output"),
+    ] = False,
+) -> None:
+    """Generate Excel schedule files from schedule JSON."""
+    if not input_file.exists():
+        console.print(f"[bold red]Error:[/bold red] File not found: {input_file}")
+        raise typer.Exit(1)
+
+    # Validate language option
+    if language and language not in ("kaz", "rus"):
+        console.print(f"[bold red]Error:[/bold red] Invalid language: {language}. Use 'kaz' or 'rus'.")
+        raise typer.Exit(1)
+
+    # Validate year option
+    if year and year not in (1, 2, 3, 4):
+        console.print(f"[bold red]Error:[/bold red] Invalid year: {year}. Use 1, 2, 3, or 4.")
+        raise typer.Exit(1)
+
+    # Validate week_type option
+    if week_type and week_type not in ("odd", "even"):
+        console.print(f"[bold red]Error:[/bold red] Invalid week type: {week_type}. Use 'odd' or 'even'.")
+        raise typer.Exit(1)
+
+    # Default output directory
+    output_path = output_dir or Path("output/excel")
+
+    console.print(f"\n[bold]Generating Excel schedules from:[/bold] {input_file.name}")
+    if language:
+        console.print(f"  Language: {language}")
+    if year:
+        console.print(f"  Year: {year}")
+    if week_type:
+        console.print(f"  Week type: {week_type}")
+
+    with console.status("[bold green]Generating Excel files..."):
+        generated_files = generate_schedule_excel(
+            input_path=input_file,
+            output_dir=output_path,
+            language=language,
+            year=year,
+            week_type=week_type,
+        )
+
+    if not generated_files:
+        console.print("[bold yellow]Warning:[/bold yellow] No files generated. No groups matched the criteria.")
+        raise typer.Exit(1)
+
+    console.print(f"\n[bold green]✓[/bold green] Generated {len(generated_files)} file(s):")
+    for file_path in generated_files:
+        console.print(f"  - {file_path}")
+
+    if verbose:
+        console.print(f"\n[bold]Output directory:[/bold] {output_path.absolute()}")
 
 
 if __name__ == "__main__":
