@@ -5,7 +5,7 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-from .models import Day, LectureStream, Room, WeekType
+from .models import Day, LectureStream, PracticalStream, Room, WeekType
 
 
 class RoomManager:
@@ -445,9 +445,7 @@ class RoomManager:
         # Example: 30 students, 18-seat room, buffer=15 -> 18+15=33 >= 30 ✓
         buffer = self._calculate_buffer(student_count)
 
-        buffered = [
-            r for r in available if (r.capacity + buffer) >= student_count
-        ]
+        buffered = [r for r in available if (r.capacity + buffer) >= student_count]
         if buffered:
             # Return largest available room (closest to needed capacity)
             return max(buffered, key=lambda r: r.capacity)
@@ -577,3 +575,77 @@ class RoomManager:
                 if address is None or room.address == address:
                     return room
         return None
+
+    def find_room_for_practical(
+        self,
+        stream: PracticalStream,
+        day: Day,
+        slot: int,
+        week_type: WeekType = WeekType.BOTH,
+    ) -> Room | None:
+        """Find a room for a practical stream with priority-based selection.
+
+        Priority order:
+        1. Subject-specific rooms for practicals (from subject-rooms.json)
+        2. Instructor room preferences for practicals (from instructor-rooms.json)
+        3. Group building preferences (from group-buildings.json)
+        4. General pool - find by capacity
+
+        Args:
+            stream: PracticalStream to find room for
+            day: Day of the week
+            slot: Slot number
+            week_type: Week type to check
+
+        Returns:
+            Suitable Room or None if not found
+        """
+        # 1. Subject-specific rooms for practicals (strict - no fallback if defined)
+        if stream.subject in self.subject_rooms:
+            allowed = self._get_subject_rooms(stream.subject, "practice")
+            if allowed:
+                # Subject has specific rooms for practicals - must use them, no fallback
+                room = self._find_available_by_capacity(
+                    allowed,
+                    stream.student_count,
+                    day,
+                    slot,
+                    week_type,
+                    allow_special=True,
+                )
+                return room  # Returns room or None, no fallback to general pool
+
+        # 2. Instructor room preferences for practicals
+        clean_name = self._clean_instructor_name(stream.instructor)
+        if clean_name in self.instructor_rooms:
+            allowed = self._get_instructor_rooms(clean_name, "practice")
+            room = self._find_available_by_capacity(
+                allowed, stream.student_count, day, slot, week_type, allow_special=True
+            )
+            if room:
+                return room
+
+        # 3. Group building preferences
+        preferred_rooms = self._get_group_building_rooms(stream.groups)
+        if preferred_rooms:
+            room = self._find_available_by_capacity(
+                preferred_rooms,
+                stream.student_count,
+                day,
+                slot,
+                week_type,
+                allow_special=False,
+            )
+            if room:
+                return room
+
+        # 4. General pool - find by capacity (excludes reserved buildings for other specialties)
+        return self._find_available_by_capacity(
+            self.rooms,
+            stream.student_count,
+            day,
+            slot,
+            week_type,
+            allow_special=False,
+            groups=stream.groups,
+        )

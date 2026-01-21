@@ -35,6 +35,12 @@ class UnscheduledReason(str, Enum):
     NO_CONSECUTIVE_SLOTS = "no_consecutive_slots"
     ALL_SLOTS_EXHAUSTED = "all_slots_exhausted"
     BUILDING_GAP_REQUIRED = "building_gap_required"
+    # Stage 2 specific reasons
+    NO_LECTURE_DEPENDENCY = "no_lecture_dependency"
+    SUBJECT_DAILY_LIMIT_EXCEEDED = "subject_daily_limit_exceeded"
+    DAILY_LOAD_EXCEEDED = "daily_load_exceeded"
+    MAX_WINDOWS_EXCEEDED = "max_windows_exceeded"
+    INSTRUCTOR_DAY_CONSTRAINT = "instructor_day_constraint"
 
 
 @dataclass
@@ -77,6 +83,40 @@ class LectureStream:
     sheet: str
     instructor_available_slots: int = 0  # Available slots for this instructor
     subject_prac_lab_hours: int = 0  # Total practical + lab hours for subject
+
+    @property
+    def max_hours(self) -> int:
+        """Maximum hours needed per week."""
+        return max(self.hours_odd_week, self.hours_even_week)
+
+
+@dataclass
+class LectureDependency:
+    """Information about a lecture that a practical depends on."""
+
+    lecture_id: str
+    day: Day
+    end_slot: int  # Last slot of the lecture
+    groups: list[str]  # Groups that attend this lecture
+
+
+@dataclass
+class PracticalStream:
+    """Prepared practical stream for Stage 2 scheduling."""
+
+    id: str
+    subject: str
+    instructor: str
+    language: str
+    groups: list[str]
+    student_count: int
+    hours_odd_week: int
+    hours_even_week: int
+    shift: Shift
+    sheet: str
+    stream_type: str  # "practical" or "lab"
+    lecture_dependency: LectureDependency | None = None
+    complexity_score: float = 0.0
 
     @property
     def max_hours(self) -> int:

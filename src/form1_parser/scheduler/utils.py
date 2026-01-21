@@ -12,7 +12,13 @@ from .constants import (
     YEAR_SHIFT_MAP,
     Shift,
 )
-from .models import LectureStream
+from .models import Day, LectureDependency, LectureStream, PracticalStream
+
+# Subjects to exclude from Stage 2 (subgroups, no paired lecture)
+STAGE2_EXCLUDED_SUBJECTS = ["Шетел тілі", "Орыс тілі", "Қазақ тілі"]
+
+# Stage 2 minimum groups
+STAGE2_MIN_GROUPS = 2
 
 
 def parse_group_year(group_name: str) -> int:
@@ -299,3 +305,260 @@ def sort_streams_by_priority(streams: list[LectureStream]) -> list[LectureStream
             -s.student_count,  # Descending (more = higher priority)
         ),
     )
+
+
+# ===========================
+# Stage 2 utility functions
+# ===========================
+
+
+def build_lecture_dependency_map(
+    assignments: list[dict],
+) -> dict[str, dict[str, LectureDependency]]:
+    """Build a mapping of (subject, language) -> LectureDependency from Stage 1 assignments.
+
+    For each unique (subject, language) combination, this finds the lecture assignment
+    with the latest day and end slot (most constrained).
+
+    Args:
+        assignments: List of assignment dictionaries from Stage 1 schedule
+
+    Returns:
+        Dict mapping (subject, language) tuple key to LectureDependency
+    """
+    # Group assignments by (subject, language)
+    subject_lang_assignments: dict[tuple[str, str], list[dict]] = {}
+
+    for assignment in assignments:
+        subject = assignment.get("subject", "")
+        # Infer language from groups (Kazakh groups are odd, Russian are even)
+        groups = assignment.get("groups", [])
+        language = _infer_language_from_groups(groups)
+
+        key = (subject, language)
+        if key not in subject_lang_assignments:
+            subject_lang_assignments[key] = []
+        subject_lang_assignments[key].append(assignment)
+
+    # Build dependency map with the most constrained (latest day/slot) lecture
+    dependency_map: dict[str, dict[str, LectureDependency]] = {}
+
+    day_order = {
+        "monday": 0,
+        "tuesday": 1,
+        "wednesday": 2,
+        "thursday": 3,
+        "friday": 4,
+        "saturday": 5,
+    }
+
+    for (subject, language), assigns in subject_lang_assignments.items():
+        # Find the assignment with the latest day and slot
+        latest = max(
+            assigns,
+            key=lambda a: (day_order.get(a.get("day", ""), 0), a.get("slot", 0)),
+        )
+
+        if subject not in dependency_map:
+            dependency_map[subject] = {}
+
+        dependency_map[subject][language] = LectureDependency(
+            lecture_id=latest.get("stream_id", ""),
+            day=Day(latest.get("day", "monday")),
+            end_slot=latest.get("slot", 0),
+            groups=latest.get("groups", []),
+        )
+
+    return dependency_map
+
+
+def _infer_language_from_groups(groups: list[str]) -> str:
+    """Infer language (Kazakh or Russian) from group names.
+
+    Kazakh groups have odd second digits (11, 13, 21, 23, etc.)
+    Russian groups have even second digits (12, 14, 22, 24, etc.)
+
+    Args:
+        groups: List of group names
+
+    Returns:
+        "kaz" or "rus"
+    """
+    if not groups:
+        return "kaz"  # Default
+
+    # Check first group
+    match = re.search(r"-(\d+)", groups[0])
+    if match:
+        number = int(match.group(1))
+        last_digit = number % 10
+        if last_digit % 2 == 0:  # Even = Russian
+            return "rus"
+
+    return "kaz"
+
+
+def calculate_complexity_score(
+    stream: PracticalStream,
+    lecture_day: Day,
+    lecture_end_slot: int,
+) -> float:
+    """Calculate complexity score for a practical stream.
+
+    Higher score = more constrained = should be scheduled first.
+
+    Formula:
+    - Lecture day constraint: Later day = more constrained (x20)
+    - Lecture end slot: Later slot = more constrained (x2)
+    - Group count: More groups = harder to schedule (x15)
+    - Hours requirement: More hours = harder to fit (x5)
+    - Student count: More students = fewer suitable rooms (x0.3)
+
+    Args:
+        stream: PracticalStream to evaluate
+        lecture_day: Day of the dependent lecture
+        lecture_end_slot: End slot of the dependent lecture
+
+    Returns:
+        Complexity score (higher = should be scheduled first)
+    """
+    day_order = {
+        Day.MONDAY: 0,
+        Day.TUESDAY: 1,
+        Day.WEDNESDAY: 2,
+        Day.THURSDAY: 3,
+        Day.FRIDAY: 4,
+        Day.SATURDAY: 5,
+    }
+
+    score = 0.0
+
+    # Lecture day constraint (later = more constrained)
+    score += day_order.get(lecture_day, 0) * 20
+    score += lecture_end_slot * 2
+
+    # Group count
+    score += len(stream.groups) * 15
+
+    # Hours requirement
+    score += stream.hours_odd_week * 5
+    score += stream.hours_even_week * 5
+
+    # Student count
+    score += stream.student_count * 0.3
+
+    return score
+
+
+def filter_stage2_practicals(
+    streams: list[dict],
+    lecture_dependency_map: dict[str, dict[str, LectureDependency]],
+) -> list[PracticalStream]:
+    """Filter and convert streams to PracticalStream objects for Stage 2.
+
+    Stage 2 criteria:
+    - Type is "practical" (labs handled separately in Stage 3)
+    - Has at least STAGE2_MIN_GROUPS groups
+    - NOT is_subgroup or is_implicit_subgroup
+    - NOT in STAGE2_EXCLUDED_SUBJECTS
+    - HAS a matching lecture in Stage 1
+
+    Args:
+        streams: List of stream dictionaries from parsed JSON
+        lecture_dependency_map: Map from build_lecture_dependency_map()
+
+    Returns:
+        List of PracticalStream objects ready for scheduling
+    """
+    practical_streams = []
+
+    for stream in streams:
+        stream_type = stream.get("stream_type", "")
+
+        # Filter: only practicals with 2+ groups
+        if stream_type != "practical":
+            continue
+
+        groups = stream.get("groups", [])
+        if len(groups) < STAGE2_MIN_GROUPS:
+            continue
+
+        # Skip subgroups
+        if stream.get("is_subgroup", False) or stream.get(
+            "is_implicit_subgroup", False
+        ):
+            continue
+
+        subject = stream.get("subject", "")
+
+        # Skip excluded subjects
+        if subject in STAGE2_EXCLUDED_SUBJECTS:
+            continue
+
+        # Check for lecture dependency
+        if subject not in lecture_dependency_map:
+            continue
+
+        # Infer language
+        language = _infer_language_from_groups(groups)
+
+        # Get lecture dependency for this language
+        lang_deps = lecture_dependency_map[subject]
+        if language not in lang_deps:
+            # Try alternate language
+            alt_language = "rus" if language == "kaz" else "kaz"
+            if alt_language not in lang_deps:
+                continue
+            language = alt_language
+
+        lecture_dep = lang_deps[language]
+
+        hours = stream.get("hours", {})
+        odd_week = hours.get("odd_week", 0)
+        even_week = hours.get("even_week", 0)
+
+        # Skip streams with no hours
+        if odd_week == 0 and even_week == 0:
+            continue
+
+        instructor = stream.get("instructor", "")
+        shift = determine_shift(groups)
+
+        practical_stream = PracticalStream(
+            id=stream.get("id", ""),
+            subject=subject,
+            instructor=instructor,
+            language=language,
+            groups=groups,
+            student_count=stream.get("student_count", 0),
+            hours_odd_week=odd_week,
+            hours_even_week=even_week,
+            shift=shift,
+            sheet=stream.get("sheet", ""),
+            stream_type=stream_type,
+            lecture_dependency=lecture_dep,
+            complexity_score=0.0,  # Will be set later
+        )
+
+        # Calculate complexity score
+        practical_stream.complexity_score = calculate_complexity_score(
+            practical_stream, lecture_dep.day, lecture_dep.end_slot
+        )
+
+        practical_streams.append(practical_stream)
+
+    return practical_streams
+
+
+def sort_practicals_by_complexity(
+    streams: list[PracticalStream],
+) -> list[PracticalStream]:
+    """Sort practical streams by complexity score (highest first).
+
+    Args:
+        streams: List of PracticalStream objects
+
+    Returns:
+        Sorted list with most complex (hardest to schedule) first
+    """
+    return sorted(streams, key=lambda s: -s.complexity_score)

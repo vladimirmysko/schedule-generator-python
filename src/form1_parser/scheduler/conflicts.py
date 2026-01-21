@@ -15,14 +15,17 @@ class ConflictTracker:
     - group_schedule: Tracks which groups have classes at each (day, slot, week_type)
     - group_daily_load: Counts how many lectures each group has per day for even distribution
     - group_building_schedule: Tracks which building each group is in at each (day, slot)
+    - group_subject_daily_hours: Tracks hours per subject per group per day (Stage 2)
     - _weekly_unavailable: Weekly unavailability from instructor-availability.json
     - _nearby_buildings: Sets of building addresses that are considered nearby
+    - _instructor_day_constraints: Day-based teaching constraints from instructor-days.json
     """
 
     def __init__(
         self,
         instructor_availability: list[dict] | None = None,
         nearby_buildings: dict | None = None,
+        instructor_day_constraints: list[dict] | None = None,
     ) -> None:
         # (day, slot, week_type) -> set of instructors
         self.instructor_schedule: dict[tuple[Day, int, WeekType], set[str]] = (
@@ -36,12 +39,20 @@ class ConflictTracker:
         self.group_daily_load: dict[tuple[str, Day], int] = defaultdict(int)
         # (group, day, slot, week_type) -> building address
         self.group_building_schedule: dict[tuple[str, Day, int, WeekType], str] = {}
+        # (group, day, subject) -> hours scheduled (Stage 2)
+        self.group_subject_daily_hours: dict[tuple[str, Day, str], int] = defaultdict(
+            int
+        )
         # Build weekly unavailability lookup from instructor availability data
         self._weekly_unavailable = self._build_availability_lookup(
             instructor_availability
         )
         # Build nearby buildings lookup for building change time constraint
         self._nearby_buildings = self._build_nearby_buildings_lookup(nearby_buildings)
+        # Build instructor day constraints lookup
+        self._instructor_day_constraints = self._build_instructor_day_constraints(
+            instructor_day_constraints
+        )
 
     def _build_availability_lookup(
         self, availability: list[dict] | None
@@ -94,6 +105,52 @@ class ConflictTracker:
             if addresses:
                 result.append(set(addresses))
         return result
+
+    def _build_instructor_day_constraints(
+        self, constraints: list[dict] | None
+    ) -> dict[str, dict]:
+        """Build lookup dictionary for instructor day constraints.
+
+        Args:
+            constraints: List of instructor day constraint records from JSON
+
+        Returns:
+            Dictionary mapping instructor name to constraint info:
+            {
+                "instructor_name": {
+                    "year_days": {1: ["monday", "tuesday"], 2: ["wednesday"]},
+                    "one_day_only": True/False
+                }
+            }
+        """
+        if not constraints:
+            return {}
+
+        lookup: dict[str, dict] = {}
+        for record in constraints:
+            name = record.get("name", "")
+            if not name:
+                continue
+
+            constraint_info: dict = {}
+
+            # Year-day constraints: instructor can only teach specific years on specific days
+            year_days = record.get("year_days", {})
+            if year_days:
+                # Convert year keys to int and day values to lowercase
+                constraint_info["year_days"] = {
+                    int(year): [d.lower() for d in days]
+                    for year, days in year_days.items()
+                }
+
+            # One-day-per-week constraint: all classes must be on the same day
+            if record.get("one_day_only", False):
+                constraint_info["one_day_only"] = True
+
+            if constraint_info:
+                lookup[name] = constraint_info
+
+        return lookup
 
     def _are_buildings_nearby(self, address1: str, address2: str) -> bool:
         """Check if two building addresses are considered nearby.
@@ -539,3 +596,315 @@ class ConflictTracker:
                     f"Slot {i + 1}/{num_slots}: {details}",
                 )
         return (True, None, "")
+
+    # ========================
+    # Stage 2 specific methods
+    # ========================
+
+    def get_group_subject_daily_hours(self, group: str, day: Day, subject: str) -> int:
+        """Get hours a group has for a subject on a specific day.
+
+        Args:
+            group: Group name
+            day: Day of the week
+            subject: Subject name
+
+        Returns:
+            Number of hours scheduled for this subject
+        """
+        return self.group_subject_daily_hours[(group, day, subject)]
+
+    def can_add_subject_hours(
+        self, groups: list[str], day: Day, subject: str, hours_to_add: int
+    ) -> tuple[bool, bool]:
+        """Check if hours can be added for a subject without exceeding daily limit.
+
+        The 2-hour rule: No more than 2 hours per subject per day per group (normal).
+        Extreme case: 3 hours allowed only when no other option exists.
+
+        Args:
+            groups: List of group names
+            day: Day of the week
+            subject: Subject name
+            hours_to_add: Hours to add
+
+        Returns:
+            Tuple of (can_add_normal, can_add_extreme):
+            - can_add_normal: True if ≤ 2 hours total
+            - can_add_extreme: True if ≤ 3 hours total (extreme case)
+        """
+        for group in groups:
+            current = self.group_subject_daily_hours[(group, day, subject)]
+            total = current + hours_to_add
+
+            if total > 3:
+                return (False, False)
+            if total > 2:
+                return (False, True)
+
+        return (True, True)
+
+    def reserve_subject_hours(
+        self,
+        groups: list[str],
+        day: Day,
+        subject: str,
+        hours: int,
+    ) -> None:
+        """Reserve subject hours for groups on a day.
+
+        Args:
+            groups: List of group names
+            day: Day of the week
+            subject: Subject name
+            hours: Number of hours to reserve
+        """
+        for group in groups:
+            self.group_subject_daily_hours[(group, day, subject)] += hours
+
+    def get_group_slots_on_day(
+        self, group: str, day: Day, week_type: WeekType = WeekType.BOTH
+    ) -> list[int]:
+        """Get list of slots where a group has classes on a day.
+
+        Args:
+            group: Group name
+            day: Day of the week
+            week_type: Week type to check
+
+        Returns:
+            Sorted list of slot numbers
+        """
+        slots = set()
+
+        # Check all possible slots (1-13)
+        for slot in range(1, 14):
+            # Check exact week type
+            if group in self.group_schedule[(day, slot, week_type)]:
+                slots.add(slot)
+
+            # If checking BOTH, also check ODD and EVEN
+            if week_type == WeekType.BOTH:
+                if group in self.group_schedule[(day, slot, WeekType.ODD)]:
+                    slots.add(slot)
+                if group in self.group_schedule[(day, slot, WeekType.EVEN)]:
+                    slots.add(slot)
+
+            # If checking specific week, also check BOTH
+            if week_type in (WeekType.ODD, WeekType.EVEN):
+                if group in self.group_schedule[(day, slot, WeekType.BOTH)]:
+                    slots.add(slot)
+
+        return sorted(slots)
+
+    def count_windows(self, slots: list[int]) -> int:
+        """Count the number of windows (gaps) in a list of slots.
+
+        A window is an empty slot between scheduled classes.
+
+        Args:
+            slots: Sorted list of slot numbers
+
+        Returns:
+            Number of windows
+        """
+        if len(slots) < 2:
+            return 0
+
+        windows = 0
+        for i in range(len(slots) - 1):
+            gap = slots[i + 1] - slots[i]
+            if gap > 1:
+                windows += gap - 1
+        return windows
+
+    def would_create_second_window(
+        self,
+        groups: list[str],
+        day: Day,
+        slot: int,
+        week_type: WeekType = WeekType.BOTH,
+    ) -> tuple[bool, str | None]:
+        """Check if adding a class would create a second window for any group.
+
+        Each group can have at most ONE window per day.
+
+        Args:
+            groups: List of group names
+            day: Day of the week
+            slot: Proposed slot for the new class
+            week_type: Week type to check
+
+        Returns:
+            Tuple of (would_create_second_window, conflicting_group)
+        """
+        for group in groups:
+            existing_slots = self.get_group_slots_on_day(group, day, week_type)
+
+            # If group has no existing classes, no window issue
+            if not existing_slots:
+                continue
+
+            # Simulate adding the new slot
+            new_slots = sorted(existing_slots + [slot])
+
+            # Count windows after adding
+            new_windows = self.count_windows(new_slots)
+
+            if new_windows > 1:
+                return (True, group)
+
+        return (False, None)
+
+    def is_building_gap_slot(
+        self,
+        groups: list[str],
+        day: Day,
+        slot: int,
+        week_type: WeekType = WeekType.BOTH,
+    ) -> tuple[bool, str | None]:
+        """Check if a slot must be kept free for building travel.
+
+        A slot is a building gap slot if adjacent scheduled classes are in
+        different (non-nearby) buildings.
+
+        Args:
+            groups: List of group names
+            day: Day of the week
+            slot: Slot to check
+            week_type: Week type to check
+
+        Returns:
+            Tuple of (is_gap_slot, conflicting_group)
+        """
+        for group in groups:
+            prev_building = self.get_group_building_at_slot(
+                group, day, slot - 1, week_type
+            )
+            next_building = self.get_group_building_at_slot(
+                group, day, slot + 1, week_type
+            )
+
+            # If both adjacent slots have classes in different non-nearby buildings,
+            # this slot must be a travel gap
+            if prev_building and next_building:
+                if not self._are_buildings_nearby(prev_building, next_building):
+                    return (True, group)
+
+        return (False, None)
+
+    def would_exceed_daily_load(
+        self,
+        groups: list[str],
+        day: Day,
+        hours_to_add: int,
+        max_load: int = 6,
+        week_type: WeekType = WeekType.BOTH,
+    ) -> tuple[bool, str | None]:
+        """Check if adding hours would exceed daily load limit for any group.
+
+        Args:
+            groups: List of group names
+            day: Day of the week
+            hours_to_add: Number of hours to add
+            max_load: Maximum allowed lessons per day (default 6)
+            week_type: Week type to check
+
+        Returns:
+            Tuple of (would_exceed, conflicting_group)
+        """
+        for group in groups:
+            current_load = self.get_group_daily_load(group, day)
+            if current_load + hours_to_add > max_load:
+                return (True, group)
+
+        return (False, None)
+
+    def check_instructor_day_constraint(
+        self,
+        instructor: str,
+        day: Day,
+        groups: list[str],
+    ) -> tuple[bool, str]:
+        """Check if instructor can teach on this day for these groups.
+
+        Args:
+            instructor: Instructor name
+            day: Day of the week
+            groups: List of group names (used to determine year)
+
+        Returns:
+            Tuple of (is_valid, details)
+        """
+        from .utils import clean_instructor_name, parse_group_year
+
+        cleaned_name = clean_instructor_name(instructor)
+
+        # Check if instructor has day constraints
+        if cleaned_name not in self._instructor_day_constraints:
+            return (True, "")
+
+        constraints = self._instructor_day_constraints[cleaned_name]
+
+        # Check year-day constraints
+        if "year_days" in constraints:
+            year_days = constraints["year_days"]
+            # Determine year from first group
+            if groups:
+                year = parse_group_year(groups[0])
+                if year in year_days:
+                    allowed_days = year_days[year]
+                    if day.value not in allowed_days:
+                        return (
+                            False,
+                            f"Instructor '{instructor}' can only teach year {year} on "
+                            f"{', '.join(allowed_days)}, not {day.value}",
+                        )
+
+        # Check one-day-only constraint
+        if constraints.get("one_day_only", False):
+            # Find the day this instructor is already teaching
+            existing_days = set()
+            for (d, _, _), instructors in self.instructor_schedule.items():
+                if cleaned_name in instructors:
+                    existing_days.add(d)
+
+            if existing_days and day not in existing_days:
+                existing_day = next(iter(existing_days))
+                return (
+                    False,
+                    f"Instructor '{instructor}' has one-day-only constraint and is "
+                    f"already scheduled on {existing_day.value}",
+                )
+
+        return (True, "")
+
+    def load_stage1_assignments(self, assignments: list[dict]) -> None:
+        """Load Stage 1 assignments into the conflict tracker.
+
+        Args:
+            assignments: List of assignment dictionaries from Stage 1 schedule JSON
+        """
+        for assignment in assignments:
+            day_str = assignment.get("day", "")
+            day = Day(day_str)
+            slot = assignment.get("slot", 0)
+            instructor = assignment.get("instructor", "")
+            groups = assignment.get("groups", [])
+            room_address = assignment.get("room_address", "")
+            week_type_str = assignment.get("week_type", "both")
+            week_type = WeekType(week_type_str)
+            subject = assignment.get("subject", "")
+
+            # Reserve the slot
+            self.reserve(
+                instructor,
+                groups,
+                day,
+                slot,
+                week_type,
+                building_address=room_address,
+            )
+
+            # Also track subject hours (for 2-hour rule)
+            self.reserve_subject_hours(groups, day, subject, 1)

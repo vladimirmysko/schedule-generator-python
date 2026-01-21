@@ -1,6 +1,11 @@
 """Schedule generation module for Form-1 parser."""
 
-from .algorithm import Stage1Scheduler, create_scheduler
+from .algorithm import (
+    Stage1Scheduler,
+    Stage2Scheduler,
+    create_scheduler,
+    create_stage2_scheduler,
+)
 from .conflicts import ConflictTracker
 from .constants import (
     FIRST_SHIFT_SLOTS,
@@ -24,7 +29,9 @@ from .models import (
     Assignment,
     Day,
     GroupInfo,
+    LectureDependency,
     LectureStream,
+    PracticalStream,
     Room,
     ScheduleResult,
     ScheduleStatistics,
@@ -33,18 +40,23 @@ from .models import (
 )
 from .rooms import RoomManager
 from .utils import (
+    build_lecture_dependency_map,
     clean_instructor_name,
     determine_shift,
     filter_stage1_lectures,
+    filter_stage2_practicals,
     parse_group_year,
     parse_specialty_code,
+    sort_practicals_by_complexity,
     sort_streams_by_priority,
 )
 
 __all__ = [
     # Algorithm
     "Stage1Scheduler",
+    "Stage2Scheduler",
     "create_scheduler",
+    "create_stage2_scheduler",
     # Conflicts
     "ConflictTracker",
     # Constants
@@ -70,7 +82,9 @@ __all__ = [
     "WeekType",
     "TimeSlot",
     "GroupInfo",
+    "LectureDependency",
     "LectureStream",
+    "PracticalStream",
     "Room",
     "Assignment",
     "ScheduleStatistics",
@@ -83,5 +97,8 @@ __all__ = [
     "determine_shift",
     "clean_instructor_name",
     "filter_stage1_lectures",
+    "filter_stage2_practicals",
     "sort_streams_by_priority",
+    "sort_practicals_by_complexity",
+    "build_lecture_dependency_map",
 ]
