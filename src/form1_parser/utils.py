@@ -15,6 +15,7 @@ from .constants import (
 )
 from .exceptions import DataStartNotFoundError, InstructorColumnNotFoundError
 from .models import WeeklyHours
+from .normalization import normalize_instructor_name
 
 
 def calculate_weekly_hours(total_hours: int) -> tuple[int, int]:
@@ -228,12 +229,6 @@ def clean_instructor_name(name: str) -> str:
         name: Raw instructor name
 
     Returns:
-        Cleaned instructor name
+        Cleaned instructor name with prefixes removed
     """
-    if not name or pd.isna(name):
-        return ""
-
-    name = str(name).strip()
-    # Remove extra whitespace
-    name = " ".join(name.split())
-    return name
+    return normalize_instructor_name(name)

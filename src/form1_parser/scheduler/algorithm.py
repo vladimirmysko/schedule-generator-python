@@ -23,7 +23,7 @@ from .utils import (
     build_lecture_dependency_map,
     filter_stage1_lectures,
     filter_stage2_practicals,
-    sort_practicals_by_complexity,
+    load_second_shift_groups,
     sort_streams_by_priority,
 )
 
@@ -586,6 +586,7 @@ class Stage2Scheduler:
         instructor_availability: list[dict] | None = None,
         nearby_buildings: dict | None = None,
         instructor_day_constraints: list[dict] | None = None,
+        second_shift_groups: set[str] | None = None,
     ) -> None:
         """Initialize the Stage 2 scheduler.
 
@@ -597,8 +598,10 @@ class Stage2Scheduler:
             instructor_availability: List from instructor-availability.json
             nearby_buildings: Dictionary from nearby-buildings.json
             instructor_day_constraints: List from instructor-days.json
+            second_shift_groups: Set of groups requiring second shift for practicals
         """
         self.instructor_availability = instructor_availability
+        self.second_shift_groups = second_shift_groups
         self.conflict_tracker = ConflictTracker(
             instructor_availability, nearby_buildings, instructor_day_constraints
         )
@@ -629,11 +632,22 @@ class Stage2Scheduler:
 
         # 3. Filter practicals for Stage 2
         practicals = filter_stage2_practicals(
-            streams, lecture_dep_map, self.instructor_availability
+            streams,
+            lecture_dep_map,
+            self.instructor_availability,
+            self.second_shift_groups,
         )
 
-        # 4. Sort by complexity (most constrained first)
-        sorted_practicals = sort_practicals_by_complexity(practicals)
+        # 4. Compute viable positions for each stream and sort
+        # Streams with fewer viable positions should be scheduled first
+        for stream in practicals:
+            stream.viable_positions = self._count_viable_positions(stream)
+
+        # Sort by: viable_positions (ascending), then complexity_score (descending)
+        sorted_practicals = sorted(
+            practicals,
+            key=lambda s: (s.viable_positions, -s.complexity_score),
+        )
 
         # 5. Schedule each practical
         new_assignments: list[Assignment] = []
@@ -1012,6 +1026,50 @@ class Stage2Scheduler:
 
         return result
 
+    def _count_viable_positions(self, stream: PracticalStream) -> int:
+        """Count how many day/slot combinations are viable for this stream.
+
+        Used to prioritize streams with fewer options (schedule them first).
+
+        Args:
+            stream: PracticalStream to evaluate
+
+        Returns:
+            Number of viable starting positions (day + slot combinations)
+        """
+        if not stream.lecture_dependency:
+            return 0
+
+        hours = stream.max_hours
+        valid_slots = get_slots_for_shift(stream.shift)
+        is_flexible = stream.subject in FLEXIBLE_SCHEDULE_SUBJECTS
+
+        # For flexible subjects, check all weekdays
+        days_to_check = (
+            self.WEEKDAYS
+            if is_flexible
+            else self._get_days_after(stream.lecture_dependency.day)
+        )
+
+        viable_count = 0
+        use_extreme = is_flexible and hours >= 3
+
+        for day in days_to_check:
+            for slot in valid_slots:
+                # Check if consecutive slots fit
+                if hours > 1:
+                    if not all((slot + i) in valid_slots for i in range(hours)):
+                        continue
+
+                # Check all constraints (without reserving)
+                passed, _, _ = self._passes_all_checks(
+                    stream, day, slot, hours, extreme=use_extreme
+                )
+                if passed:
+                    viable_count += 1
+
+        return viable_count
+
     def _passes_all_checks(
         self,
         stream: PracticalStream,
@@ -1103,6 +1161,26 @@ class Stage2Scheduler:
             if not is_available:
                 return (False, avail_reason, avail_details)
 
+            # 3d. Building gap constraint: check if scheduling at this slot
+            # would violate building change time constraint.
+            # For multi-hour blocks, we must check each slot (especially the last one)
+            # to ensure there's a gap when changing buildings.
+            current_room = self.room_manager.find_room_for_practical(
+                stream, day, current_slot
+            )
+            if current_room:
+                gap_ok, _, gap_details = (
+                    self.conflict_tracker.check_building_gap_constraint(
+                        stream.groups,
+                        day,
+                        current_slot,
+                        current_room.address,
+                        WeekType.BOTH,
+                    )
+                )
+                if not gap_ok:
+                    return (False, UnscheduledReason.BUILDING_GAP_REQUIRED, gap_details)
+
         # 4. Instructor day constraints
         day_ok, day_details = self.conflict_tracker.check_instructor_day_constraint(
             stream.instructor, day, stream.groups
@@ -1118,13 +1196,6 @@ class Stage2Scheduler:
                 UnscheduledReason.NO_ROOM_AVAILABLE,
                 f"No room with capacity >= {stream.student_count} on {day.value} slot {slot}",
             )
-
-        # 6. Building gap constraint for the proposed room
-        gap_ok, _, gap_details = self.conflict_tracker.check_building_gap_constraint(
-            stream.groups, day, slot, room.address, WeekType.BOTH
-        )
-        if not gap_ok:
-            return (False, UnscheduledReason.BUILDING_GAP_REQUIRED, gap_details)
 
         return (True, None, "")
 
@@ -1166,6 +1237,7 @@ def create_stage2_scheduler(
     instructor_availability_json: Path | str | None = None,
     nearby_buildings_json: Path | str | None = None,
     instructor_days_json: Path | str | None = None,
+    groups_second_shift_csv: Path | str | None = None,
 ) -> Stage2Scheduler:
     """Factory function to create a Stage2Scheduler with loaded reference data.
 
@@ -1177,6 +1249,7 @@ def create_stage2_scheduler(
         instructor_availability_json: Path to instructor-availability.json file (optional)
         nearby_buildings_json: Path to nearby-buildings.json file (optional)
         instructor_days_json: Path to instructor-days.json file (optional)
+        groups_second_shift_csv: Path to groups-second-shift.csv file (optional)
 
     Returns:
         Configured Stage2Scheduler instance
@@ -1227,6 +1300,13 @@ def create_stage2_scheduler(
             with open(instructor_days_path, encoding="utf-8") as f:
                 instructor_day_constraints = json.load(f)
 
+    # Load second shift groups
+    second_shift_groups = None
+    if groups_second_shift_csv:
+        groups_second_shift_path = Path(groups_second_shift_csv)
+        if groups_second_shift_path.exists():
+            second_shift_groups = load_second_shift_groups(groups_second_shift_path)
+
     return Stage2Scheduler(
         rooms_path,
         subject_rooms,
@@ -1235,4 +1315,5 @@ def create_stage2_scheduler(
         instructor_availability,
         nearby_buildings,
         instructor_day_constraints,
+        second_shift_groups,
     )

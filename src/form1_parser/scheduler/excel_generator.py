@@ -53,7 +53,16 @@ STRINGS_RUS = {
 }
 
 # Column widths
-COLUMN_WIDTHS = {"A": 12.0, "B": 14.0, "C": 5.0, "D": 20.0, "E": 20.0, "F": 20.0}
+COLUMN_WIDTHS = {
+    "A": 12.0,
+    "B": 14.0,
+    "C": 5.0,
+    "D": 30.0,
+    "E": 30.0,
+    "F": 30.0,
+    "G": 30.0,
+    "H": 30.0,
+}
 
 # Day row ranges (start_row, end_row)
 DAY_ROW_RANGES = {
@@ -91,9 +100,9 @@ THIN_BORDER = Border(
 
 # Merged cells for the layout
 MERGED_CELLS = [
-    "A2:F2",  # University name
-    "A6:F6",  # Schedule title
-    "A8:F8",  # Course/year
+    "A2:H2",  # University name
+    "A6:H6",  # Schedule title
+    "A8:H8",  # Course/year
     "A10:A16",  # Monday label
     "A17:A23",  # Tuesday label
     "A24:A30",  # Wednesday label
@@ -102,7 +111,6 @@ MERGED_CELLS = [
     "A46:C46",  # Agreement text
     "A47:C47",  # Date line
 ]
-
 
 
 @dataclass
@@ -225,7 +233,7 @@ class ScheduleExcelGenerator:
         return filtered, sorted(year_groups)
 
     def group_into_sheets(
-        self, groups: list[str], max_per_sheet: int = 3
+        self, groups: list[str], max_per_sheet: int = 5
     ) -> list[list[str]]:
         """Split groups into sheets with maximum groups per sheet.
 
@@ -399,7 +407,7 @@ class ScheduleExcelGenerator:
             ws = wb.create_sheet(title="Empty")
             return wb
 
-        # Split groups into sheets (max 3 per sheet)
+        # Split groups into sheets (max 5 per sheet)
         sheets = self.group_into_sheets(groups)
 
         for sheet_groups in sheets:
@@ -457,13 +465,13 @@ class ScheduleExcelGenerator:
         # Set row heights dynamically
         ws.row_dimensions[9].height = 30.0
         for row in range(10, last_data_row + 1):
-            ws.row_dimensions[row].height = 55.0
+            ws.row_dimensions[row].height = 75.0
 
         # Merge static header cells
         static_merges = [
-            "A2:F2",  # University name
-            "A6:F6",  # Schedule title
-            "A8:F8",  # Course/year
+            "A2:H2",  # University name
+            "A6:H6",  # Schedule title
+            "A8:H8",  # Course/year
         ]
         for merge_range in static_merges:
             ws.merge_cells(merge_range)
@@ -498,18 +506,18 @@ class ScheduleExcelGenerator:
         ws["A2"].font = FONT_TITLE
         ws["A2"].alignment = ALIGN_CENTER
 
-        # Row 3-5: Approval text (right-aligned in F column)
-        ws["F3"] = self.strings["approval"]
-        ws["F3"].font = FONT_APPROVAL
-        ws["F3"].alignment = ALIGN_RIGHT
+        # Row 3-5: Approval text (right-aligned in H column)
+        ws["H3"] = self.strings["approval"]
+        ws["H3"].font = FONT_APPROVAL
+        ws["H3"].alignment = ALIGN_RIGHT
 
-        ws["F4"] = self.strings["position"]
-        ws["F4"].font = FONT_APPROVAL
-        ws["F4"].alignment = ALIGN_RIGHT
+        ws["H4"] = self.strings["position"]
+        ws["H4"].font = FONT_APPROVAL
+        ws["H4"].alignment = ALIGN_RIGHT
 
-        ws["F5"] = self.strings["date_line"]
-        ws["F5"].font = FONT_APPROVAL
-        ws["F5"].alignment = ALIGN_RIGHT
+        ws["H5"] = self.strings["date_line"]
+        ws["H5"].font = FONT_APPROVAL
+        ws["H5"].alignment = ALIGN_RIGHT
 
         # Row 6: Schedule title
         ws["A6"] = self.strings["schedule_title"]
@@ -542,8 +550,8 @@ class ScheduleExcelGenerator:
         ws["C9"].alignment = ALIGN_CENTER
         ws["C9"].border = THIN_BORDER
 
-        # Group columns (D, E, F)
-        group_cols = ["D", "E", "F"]
+        # Group columns (D, E, F, G, H)
+        group_cols = ["D", "E", "F", "G", "H"]
         for i, col in enumerate(group_cols):
             if i < len(groups):
                 ws[f"{col}9"] = groups[i]
@@ -560,7 +568,9 @@ class ScheduleExcelGenerator:
 
         ws[f"A{footer_row + 1}"] = self.strings["date_line"]
         ws[f"A{footer_row + 1}"].font = FONT_APPROVAL
-        ws[f"A{footer_row + 1}"].alignment = Alignment(horizontal="left", vertical="center")
+        ws[f"A{footer_row + 1}"].alignment = Alignment(
+            horizontal="left", vertical="center"
+        )
 
     def setup_grid(
         self,
@@ -604,8 +614,8 @@ class ScheduleExcelGenerator:
                 ws[f"C{row}"].alignment = ALIGN_CENTER
                 ws[f"C{row}"].border = THIN_BORDER
 
-                # Group columns (D, E, F) - empty cells with borders
-                for col in ["D", "E", "F"]:
+                # Group columns (D, E, F, G, H) - empty cells with borders
+                for col in ["D", "E", "F", "G", "H"]:
                     ws[f"{col}{row}"].border = THIN_BORDER
                     ws[f"{col}{row}"].alignment = ALIGN_CENTER
                     ws[f"{col}{row}"].font = FONT_CELL
@@ -627,7 +637,7 @@ class ScheduleExcelGenerator:
             day_ranges: Dynamic row ranges for each day.
             slot_to_row: Mapping from slot number to row offset.
         """
-        group_cols = ["D", "E", "F"]
+        group_cols = ["D", "E", "F", "G", "H"]
 
         for day in DAYS_ORDER:
             start_row, _ = day_ranges[day]

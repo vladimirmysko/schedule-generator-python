@@ -24,6 +24,11 @@ from .excel_generator import (
     ScheduleExcelGenerator,
     generate_schedule_excel,
 )
+from .instructor_excel_generator import (
+    InstructorGeneratorConfig,
+    InstructorScheduleExcelGenerator,
+    generate_instructor_schedule_excel,
+)
 from .exporter import export_schedule_json, load_parsed_data
 from .models import (
     Assignment,
@@ -74,6 +79,10 @@ __all__ = [
     "GeneratorConfig",
     "ScheduleExcelGenerator",
     "generate_schedule_excel",
+    # Instructor Excel Generator
+    "InstructorGeneratorConfig",
+    "InstructorScheduleExcelGenerator",
+    "generate_instructor_schedule_excel",
     # Exporter
     "export_schedule_json",
     "load_parsed_data",

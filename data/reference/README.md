@@ -9,6 +9,7 @@ This directory contains configuration files used by the schedule parser system. 
 | `rooms.csv`                    | CSV    | Master list of all available rooms          |
 | `instructor-prefixes.csv`      | CSV    | Academic title prefixes mapping (KZ → RU)   |
 | `dead-groups.csv`              | CSV    | Groups that don't attend classes            |
+| `groups-second-shift.csv`      | CSV    | Groups forced to second shift for practicals |
 | `subject-names-map.csv`        | CSV    | Bilingual subject name mappings (KZ → RU)   |
 | `instructor-availability.json` | JSON   | Instructors unavailability time slots       |
 | `instructor-rooms.json`        | JSON   | Instructors room preferences                |
@@ -160,6 +161,43 @@ name
 ```
 
 Note: The file contains 20+ entries covering various specialties (НД, ЭЛ, БЖД, АУ, ЮР).
+
+---
+
+## groups-second-shift.csv
+
+List of groups that must attend practical and laboratory classes in the second shift, overriding the default shift assignment rules. By default, 1st-year students attend the first shift (slots 1-5) and 2nd-year students attend the second shift (slots 6-13). Groups listed in this file are exceptions to these rules.
+
+### Format
+
+```csv
+name
+```
+
+### Fields
+
+| Field  | Type   | Description                                              |
+| ------ | ------ | -------------------------------------------------------- |
+| `name` | string | Full group name (e.g., "АРХ-15 О", "ЮР-17 О", "НД-15 О") |
+
+### Behavior
+
+- Only affects **practical** and **laboratory** classes (not lectures)
+- Groups in this file are scheduled in **second shift slots (6-13)** regardless of their year
+- This is typically used when certain 1st-year groups need to share resources or instructors with 2nd-year groups
+
+### Example
+
+```csv
+name
+АРХ-15 О
+АРХ-15А О
+ЮР-17 О
+ЮР-19 О
+НД-15 О
+НД-17 О
+НД-19 О
+```
 
 ---
 

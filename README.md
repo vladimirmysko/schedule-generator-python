@@ -166,6 +166,50 @@ Language is determined by the second digit of the group code:
 - Odd (1, 3, 5, 7, 9) → Kazakh (e.g., `АРХ-11 О`, `ЮР-33 О`)
 - Even (2, 4, 6, 8, 0) → Russian (e.g., `АРХ-22 О`, `СТР-24 О`)
 
+### Generate Instructor Excel
+
+Generate Excel schedule files organized by instructor. Creates one sheet per instructor with days on rows and time slots on columns. Includes color coding for odd/even weeks.
+
+```bash
+uv run form1-parser generate-instructor-excel <INPUT_FILE> [OPTIONS]
+```
+
+**Arguments:**
+- `INPUT_FILE` - Schedule JSON file from `form1-parser schedule` command (required)
+
+**Options:**
+- `-o, --output PATH` - Output directory for Excel files (default: output/instructors/)
+- `-l, --language [kaz|rus]` - Filter by language (Kazakh or Russian)
+- `-v, --verbose` - Show detailed output
+
+**Examples:**
+
+```bash
+# Generate both language versions
+uv run form1-parser generate-instructor-excel output/schedule.json -o output/instructors/
+
+# Generate Kazakh version only
+uv run form1-parser generate-instructor-excel output/schedule.json -l kaz
+
+# Generate Russian version only
+uv run form1-parser generate-instructor-excel output/schedule.json -l rus
+```
+
+**Output Files:**
+
+Files are named: `instructor_schedules_{language}.xlsx`
+
+Examples:
+- `instructor_schedules_kaz.xlsx` - Kazakh version
+- `instructor_schedules_rus.xlsx` - Russian version
+
+**Sheet Layout:**
+- Each sheet represents one instructor
+- Rows: Monday-Friday (5 days)
+- Columns: Day name + Slots 1-13 with time ranges
+- Color coding: White (both weeks), Blue (odd week), Orange (even week)
+- Cell content: Subject, Stream type, Groups, Room + Address
+
 ## Testing
 
 ```bash
@@ -199,7 +243,8 @@ schedule-generator-python/
 │           ├── constants.py       # Time slots, shifts
 │           ├── utils.py           # Scheduling utilities
 │           ├── exporter.py        # Schedule JSON export
-│           └── excel_generator.py # Excel schedule generator
+│           ├── excel_generator.py # Excel schedule generator
+│           └── instructor_excel_generator.py # Instructor schedule generator
 ├── tests/
 │   ├── conftest.py
 │   ├── test_models.py
@@ -212,7 +257,8 @@ schedule-generator-python/
 │       ├── test_conflicts.py
 │       ├── test_rooms.py
 │       ├── test_utils.py
-│       └── test_excel_generator.py
+│       ├── test_excel_generator.py
+│       └── test_instructor_excel_generator.py
 ├── data/
 │   ├── form-1.xlsx         # Input Form-1 file
 │   └── reference/          # Reference data

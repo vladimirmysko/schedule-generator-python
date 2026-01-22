@@ -221,9 +221,19 @@ class TestGroupIntoSheets:
         groups = ["АРХ-11 О", "АРХ-13 О", "АРХ-15 О", "АРХ-17 О"]
         sheets = generator.group_into_sheets(groups)
 
-        assert len(sheets) == 2
-        assert len(sheets[0]) == 3
-        assert len(sheets[1]) == 1
+        # 4 groups should fit in 1 sheet (max 5 per sheet)
+        assert len(sheets) == 1
+        assert len(sheets[0]) == 4
+
+    def test_five_groups(self):
+        config = GeneratorConfig(language="kaz", year=1, week_type="both")
+        generator = ScheduleExcelGenerator(config)
+        groups = ["G1", "G2", "G3", "G4", "G5"]
+        sheets = generator.group_into_sheets(groups)
+
+        # 5 groups should fit in 1 sheet (max 5 per sheet)
+        assert len(sheets) == 1
+        assert len(sheets[0]) == 5
 
     def test_six_groups(self):
         config = GeneratorConfig(language="kaz", year=1, week_type="both")
@@ -231,9 +241,10 @@ class TestGroupIntoSheets:
         groups = ["G1", "G2", "G3", "G4", "G5", "G6"]
         sheets = generator.group_into_sheets(groups)
 
+        # 6 groups should split into 2 sheets (5 + 1)
         assert len(sheets) == 2
-        assert len(sheets[0]) == 3
-        assert len(sheets[1]) == 3
+        assert len(sheets[0]) == 5
+        assert len(sheets[1]) == 1
 
 
 class TestBuildScheduleGrid:

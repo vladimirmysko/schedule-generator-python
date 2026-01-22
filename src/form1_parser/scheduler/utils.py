@@ -1,7 +1,10 @@
 """Utility functions for schedule generation."""
 
+import csv
 import re
+from pathlib import Path
 
+from ..normalization import normalize_instructor_name
 from .constants import (
     FIRST_SHIFT_SLOTS,
     FLEXIBLE_SCHEDULE_SUBJECTS,
@@ -102,6 +105,62 @@ def determine_shift(groups: list[str]) -> Shift:
     return YEAR_SHIFT_MAP.get(year, Shift.FIRST)
 
 
+def load_second_shift_groups(csv_path: Path | None = None) -> set[str]:
+    """Load groups that must attend practicals in second shift.
+
+    Reads a CSV file with a 'name' column containing group names that should
+    be scheduled in the second shift for practicals/labs, regardless of their year.
+
+    Args:
+        csv_path: Path to groups-second-shift.csv file.
+                  Defaults to data/reference/groups-second-shift.csv
+
+    Returns:
+        Set of group names that require second shift scheduling
+    """
+    if csv_path is None:
+        csv_path = Path("data/reference/groups-second-shift.csv")
+
+    if not csv_path.exists():
+        return set()
+
+    groups: set[str] = set()
+    with open(csv_path, encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            name = row.get("name", "").strip()
+            if name:
+                groups.add(name)
+
+    return groups
+
+
+def determine_practical_shift(
+    groups: list[str],
+    second_shift_groups: set[str] | None = None,
+) -> Shift:
+    """Determine shift for practicals based on group membership.
+
+    If ANY group in the list is in second_shift_groups, the practical
+    must be scheduled in the second shift. Otherwise, delegate to
+    standard year-based shift determination.
+
+    Args:
+        groups: List of group names
+        second_shift_groups: Set of group names that require second shift
+
+    Returns:
+        Shift enum value
+    """
+    if second_shift_groups:
+        for group in groups:
+            if group in second_shift_groups:
+                return Shift.SECOND
+
+    # Fall back to standard year-based shift determination
+    return determine_shift(groups)
+
+
 def clean_instructor_name(name: str) -> str:
     """Clean instructor name by removing prefixes.
 
@@ -111,30 +170,7 @@ def clean_instructor_name(name: str) -> str:
     Returns:
         Cleaned name like "Уахасов Қ.С."
     """
-    prefixes = [
-        # Russian academic prefixes
-        r"^а\.о\.\s*",  # а.о. (assistant)
-        r"^а\.о\s+",  # а.о  (with space)
-        r"^с\.п\.\.*\s*",  # с.п. and с.п.. (senior lecturer, handles typo)
-        r"^с\.п\s+",  # с.п  (with space)
-        r"^доцент\s*",  # доцент (associate professor - full)
-        r"^д\.\s*",  # д. (abbreviated доцент)
-        r"^асс\.проф\.\s*",  # асс.проф. (assistant professor)
-        r"^қ\.проф\.\s*",  # қ.проф. (Kazakh: associate professor)
-        r"^проф\.\s*",  # проф. (professor - abbreviated)
-        r"^профессор\s*",  # профессор (professor - full)
-        r"^ст\.преп\.\s*",  # ст.преп. (senior lecturer)
-        r"^преподаватель\s*",  # преподаватель (lecturer - full)
-        r"^п\.\s*",  # п. (abbreviated преподаватель)
-        r"^о\.\s*",  # о. (unknown, found in data)
-        # English prefixes
-        r"^prof\.\s*",  # prof. (professor)
-        r"^Dr\s+",  # Dr (doctor)
-    ]
-    cleaned = name.strip()
-    for prefix in prefixes:
-        cleaned = re.sub(prefix, "", cleaned, flags=re.IGNORECASE)
-    return cleaned.strip()
+    return normalize_instructor_name(name)
 
 
 def build_subject_prac_lab_hours(streams: list[dict]) -> dict[str, int]:
@@ -462,6 +498,7 @@ def filter_stage2_practicals(
     streams: list[dict],
     lecture_dependency_map: dict[str, dict[str, LectureDependency]],
     instructor_availability: list[dict] | None = None,
+    second_shift_groups: set[str] | None = None,
 ) -> list[PracticalStream]:
     """Filter and convert streams to PracticalStream objects for Stage 2.
 
@@ -476,6 +513,7 @@ def filter_stage2_practicals(
         streams: List of stream dictionaries from parsed JSON
         lecture_dependency_map: Map from build_lecture_dependency_map()
         instructor_availability: List of instructor availability records
+        second_shift_groups: Set of groups that require second shift scheduling
 
     Returns:
         List of PracticalStream objects ready for scheduling
@@ -532,7 +570,7 @@ def filter_stage2_practicals(
             continue
 
         instructor = stream.get("instructor", "")
-        shift = determine_shift(groups)
+        shift = determine_practical_shift(groups, second_shift_groups)
 
         # Calculate instructor available slots for priority sorting
         available_slots = calculate_instructor_available_slots(

@@ -5,6 +5,7 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
+from ..normalization import normalize_instructor_name
 from .models import Day, LectureStream, PracticalStream, Room, WeekType
 
 
@@ -101,31 +102,7 @@ class RoomManager:
         Returns:
             Cleaned instructor name
         """
-        # Remove common prefixes
-        prefixes = [
-            # Russian academic prefixes
-            r"^а\.о\.\s*",  # а.о. (assistant)
-            r"^а\.о\s+",  # а.о  (with space)
-            r"^с\.п\.\.*\s*",  # с.п. and с.п.. (senior lecturer, handles typo)
-            r"^с\.п\s+",  # с.п  (with space)
-            r"^доцент\s*",  # доцент (associate professor - full)
-            r"^д\.\s*",  # д. (abbreviated доцент)
-            r"^асс\.проф\.\s*",  # асс.проф. (assistant professor)
-            r"^қ\.проф\.\s*",  # қ.проф. (Kazakh: associate professor)
-            r"^проф\.\s*",  # проф. (professor - abbreviated)
-            r"^профессор\s*",  # профессор (professor - full)
-            r"^ст\.преп\.\s*",  # ст.преп. (senior lecturer)
-            r"^преподаватель\s*",  # преподаватель (lecturer - full)
-            r"^п\.\s*",  # п. (abbreviated преподаватель)
-            r"^о\.\s*",  # о. (unknown, found in data)
-            # English prefixes
-            r"^prof\.\s*",  # prof. (professor)
-            r"^Dr\s+",  # Dr (doctor)
-        ]
-        cleaned = name.strip()
-        for prefix in prefixes:
-            cleaned = re.sub(prefix, "", cleaned, flags=re.IGNORECASE)
-        return cleaned.strip()
+        return normalize_instructor_name(name)
 
     def _get_subject_rooms(self, subject: str, class_type: str) -> list[Room]:
         """Get allowed rooms for a subject and class type.

@@ -118,6 +118,7 @@ class PracticalStream:
     lecture_dependency: LectureDependency | None = None
     complexity_score: float = 0.0
     instructor_available_slots: int = 0  # Used for priority sorting
+    viable_positions: int = 0  # Number of valid day/slot combinations (computed at runtime)
 
     @property
     def max_hours(self) -> int:
