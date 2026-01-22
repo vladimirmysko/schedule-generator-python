@@ -10,6 +10,7 @@ dependencies = [
     "ruff>=0.14.13",
     "typer>=0.9.0",
     "rich>=13.0.0",
+    "ortools>=9.15.6755",
 ]
 
 [project.scripts]
