@@ -10,6 +10,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, Side
 
 from .constants import YEAR_SHIFT_MAP, Shift, get_slot_time_range, get_slots_for_shift
+from .utils import parse_subgroup_info
 
 # Localization strings
 STRINGS_KAZ = {
@@ -98,6 +99,18 @@ THIN_BORDER = Border(
     bottom=Side(style="thin"),
 )
 
+# Border for last row of each day block (thick bottom)
+DAY_BOTTOM_BORDER = Border(
+    left=Side(style="thin"),
+    right=Side(style="thin"),
+    top=Side(style="thin"),
+    bottom=Side(style="medium"),
+)
+
+# Row heights
+ROW_HEIGHT_NORMAL = 75.0
+ROW_HEIGHT_SUBGROUPS = 120.0  # Taller for cells with both subgroups
+
 # Merged cells for the layout
 MERGED_CELLS = [
     "A2:H2",  # University name
@@ -136,6 +149,40 @@ def get_shift_config(year: int) -> tuple[int, int]:
     shift = YEAR_SHIFT_MAP.get(year, Shift.FIRST)
     slots = get_slots_for_shift(shift)
     return slots[0], len(slots)
+
+
+def analyze_group_structure(groups: list[str]) -> dict[str, dict]:
+    """Analyze groups and build subgroup mapping.
+
+    Args:
+        groups: List of group names (may include subgroup notation).
+
+    Returns:
+        Dict mapping base_group -> {
+            'has_subgroups': bool,
+            'subgroup_1': original_name or None,
+            'subgroup_2': original_name or None
+        }
+    """
+    structure: dict[str, dict] = {}
+    for group in groups:
+        base_name, subgroup_num = parse_subgroup_info(group)
+        if base_name not in structure:
+            structure[base_name] = {
+                "has_subgroups": False,
+                "subgroup_1": None,
+                "subgroup_2": None,
+            }
+        if subgroup_num == 1:
+            structure[base_name]["subgroup_1"] = group
+            structure[base_name]["has_subgroups"] = True
+        elif subgroup_num == 2:
+            structure[base_name]["subgroup_2"] = group
+            structure[base_name]["has_subgroups"] = True
+        else:
+            # Non-subgroup, keep as is (store in subgroup_1 slot)
+            structure[base_name]["subgroup_1"] = group
+    return structure
 
 
 class ScheduleExcelGenerator:
@@ -201,14 +248,16 @@ class ScheduleExcelGenerator:
             return second_digit % 2 == 0
         return False
 
-    def filter_assignments(self, data: dict) -> tuple[list[dict], list[str]]:
+    def filter_assignments(
+        self, data: dict
+    ) -> tuple[list[dict], list[str], dict[str, dict]]:
         """Filter assignments by configuration criteria.
 
         Args:
             data: Full schedule data with assignments.
 
         Returns:
-            Tuple of (filtered assignments, sorted group list).
+            Tuple of (filtered_assignments, base_group_list, group_structure).
         """
         assignments = data.get("assignments", [])
 
@@ -230,7 +279,11 @@ class ScheduleExcelGenerator:
         else:
             year_groups = {g for g in year_groups if not self.is_russian_group(g)}
 
-        return filtered, sorted(year_groups)
+        # Analyze group structure for subgroups
+        group_structure = analyze_group_structure(sorted(year_groups))
+        base_groups = sorted(group_structure.keys())
+
+        return filtered, base_groups, group_structure
 
     def group_into_sheets(
         self, groups: list[str], max_per_sheet: int = 5
@@ -268,18 +321,22 @@ class ScheduleExcelGenerator:
         return name[:31]
 
     def build_schedule_grid(
-        self, assignments: list[dict], groups: list[str]
-    ) -> dict[str, dict[int, dict[str, dict | None]]]:
-        """Build 2D schedule grid for given groups.
+        self,
+        assignments: list[dict],
+        base_groups: list[str],
+        group_structure: dict[str, dict],
+    ) -> dict[str, dict[int, dict[str, dict]]]:
+        """Build 2D schedule grid with subgroup awareness.
 
         Args:
             assignments: List of assignment dictionaries.
-            groups: List of group names for this sheet.
+            base_groups: List of base group names for this sheet.
+            group_structure: Group structure from analyze_group_structure().
 
         Returns:
-            Grid structure: {day: {slot: {group: assignment or None}}}
+            Grid: {day: {slot: {base_group: {'sub1': assignment, 'sub2': assignment}}}}
         """
-        grid: dict[str, dict[int, dict[str, dict | None]]] = {}
+        grid: dict[str, dict[int, dict[str, dict]]] = {}
 
         for day in DAYS_ORDER:
             grid[day] = {}
@@ -287,7 +344,9 @@ class ScheduleExcelGenerator:
                 self.config.first_slot,
                 self.config.first_slot + self.config.slots_per_day,
             ):
-                grid[day][slot] = {group: None for group in groups}
+                grid[day][slot] = {
+                    bg: {"sub1": None, "sub2": None} for bg in base_groups
+                }
 
         for assignment in assignments:
             day = assignment["day"]
@@ -296,14 +355,20 @@ class ScheduleExcelGenerator:
                 continue
             if slot not in grid[day]:
                 continue
+
             for group in assignment["groups"]:
-                if group in groups:
-                    grid[day][slot][group] = assignment
+                base_name, subgroup_num = parse_subgroup_info(group)
+                if base_name in base_groups:
+                    if subgroup_num == 2:
+                        grid[day][slot][base_name]["sub2"] = assignment
+                    else:
+                        # subgroup_num == 1 or None (non-subgroup)
+                        grid[day][slot][base_name]["sub1"] = assignment
 
         return grid
 
     def get_used_slots(
-        self, grid: dict[str, dict[int, dict[str, dict | None]]]
+        self, grid: dict[str, dict[int, dict[str, dict]]]
     ) -> dict[str, list[int]]:
         """Get slots that have at least one assignment per day.
 
@@ -318,12 +383,16 @@ class ScheduleExcelGenerator:
             used[day] = [
                 slot
                 for slot, groups in slots.items()
-                if any(a is not None for a in groups.values())
+                if any(
+                    subgroup_data["sub1"] is not None
+                    or subgroup_data["sub2"] is not None
+                    for subgroup_data in groups.values()
+                )
             ]
         return used
 
     def get_slots_to_display(
-        self, grid: dict[str, dict[int, dict[str, dict | None]]]
+        self, grid: dict[str, dict[int, dict[str, dict]]]
     ) -> list[int]:
         """Get sorted list of slots that have at least one assignment across all days.
 
@@ -368,33 +437,116 @@ class ScheduleExcelGenerator:
 
         return day_ranges, slot_to_row
 
-    def format_cell_content(self, assignment: dict) -> str:
-        """Format assignment for cell display.
+    def format_cell_content(
+        self,
+        sub1_assignment: dict | None,
+        sub2_assignment: dict | None,
+        has_subgroups: bool,
+    ) -> str:
+        """Format cell content with side-by-side subgroups.
+
+        Args:
+            sub1_assignment: Assignment for subgroup 1 (or single group).
+            sub2_assignment: Assignment for subgroup 2.
+            has_subgroups: Whether this base group has subgroup variants.
+
+        Returns:
+            Formatted multi-line string for cell.
+        """
+        if not has_subgroups:
+            # Regular single group
+            if not sub1_assignment:
+                return ""
+            return self._format_single_assignment(sub1_assignment)
+
+        # Has subgroups - check what's scheduled
+        if sub1_assignment and sub2_assignment:
+            # Both subgroups have assignments
+            if sub1_assignment.get("stream_id") == sub2_assignment.get("stream_id"):
+                # Same class for both - show once
+                return self._format_single_assignment(sub1_assignment)
+            else:
+                # Different classes - show vertically with separator
+                top = self._format_compact_assignment(sub1_assignment)
+                bottom = self._format_compact_assignment(sub2_assignment)
+                return self._merge_vertically(top, bottom)
+        elif sub1_assignment:
+            # Only subgroup 1 - whole group lesson, no separator
+            return self._format_single_assignment(sub1_assignment)
+        elif sub2_assignment:
+            # Only subgroup 2 - whole group lesson, no separator
+            return self._format_single_assignment(sub2_assignment)
+        return ""
+
+    def _format_single_assignment(self, assignment: dict) -> str:
+        """Format assignment for full-width display.
 
         Args:
             assignment: Assignment dictionary.
 
         Returns:
-            Formatted multi-line string for cell.
+            Formatted multi-line string.
         """
         stream_type = assignment.get("stream_type", "lecture")
         if stream_type == "lecture":
             subject = assignment["subject"].upper()
         else:
-            # Keep original case for practical/lab
             subject = assignment["subject"]
         instructor = assignment["instructor"]
-        # Clean instructor name
         instructor = instructor.replace("а.о.", "").replace("қ.проф.", "").strip()
         room_info = f"{assignment['room']}, {assignment['room_address']}"
         return f"{subject}\n{instructor}\n{room_info}"
 
-    def create_workbook(self, assignments: list[dict], groups: list[str]) -> Workbook:
+    def _format_compact_assignment(self, assignment: dict) -> str:
+        """Format assignment compactly for side-by-side display.
+
+        Args:
+            assignment: Assignment dictionary.
+
+        Returns:
+            Formatted multi-line string (compact).
+        """
+        subject = assignment["subject"]
+        instructor = assignment["instructor"]
+        instructor = instructor.replace("а.о.", "").replace("қ.проф.", "").strip()
+        room = assignment["room"]
+        return f"{subject}\n{instructor}\n{room}"
+
+    def _merge_vertically(self, top: str, bottom: str) -> str:
+        """Merge two assignments vertically with - separator line.
+
+        Args:
+            top: Top content (subgroup 1).
+            bottom: Bottom content (subgroup 2).
+
+        Returns:
+            Merged content with - separator line between.
+        """
+        result_lines = []
+
+        if top:
+            result_lines.extend(top.split("\n"))
+
+        # Add separator line
+        result_lines.append("-")
+
+        if bottom:
+            result_lines.extend(bottom.split("\n"))
+
+        return "\n".join(result_lines)
+
+    def create_workbook(
+        self,
+        assignments: list[dict],
+        base_groups: list[str],
+        group_structure: dict[str, dict],
+    ) -> Workbook:
         """Create Excel workbook with schedule.
 
         Args:
             assignments: Filtered assignments.
-            groups: Groups to include.
+            base_groups: Base group names to include.
+            group_structure: Group structure from analyze_group_structure().
 
         Returns:
             Populated Workbook object.
@@ -402,17 +554,20 @@ class ScheduleExcelGenerator:
         wb = Workbook()
         wb.remove(wb.active)
 
-        if not groups:
+        if not base_groups:
             # Create empty sheet if no groups
             ws = wb.create_sheet(title="Empty")
             return wb
 
         # Split groups into sheets (max 5 per sheet)
-        sheets = self.group_into_sheets(groups)
+        sheets = self.group_into_sheets(base_groups)
 
         for sheet_groups in sheets:
+            # Build substructure for this sheet's groups
+            sheet_structure = {g: group_structure[g] for g in sheet_groups}
+
             # Build grid first to determine which slots are used
-            grid = self.build_schedule_grid(assignments, sheet_groups)
+            grid = self.build_schedule_grid(assignments, sheet_groups, sheet_structure)
             slots_to_display = self.get_slots_to_display(grid)
 
             # If no assignments, skip this sheet
@@ -430,7 +585,9 @@ class ScheduleExcelGenerator:
             self.setup_sheet(ws, sheet_groups, slots_to_display, day_ranges)
 
             # Fill schedule data
-            self.fill_schedule(ws, grid, sheet_groups, day_ranges, slot_to_row)
+            self.fill_schedule(
+                ws, grid, sheet_groups, sheet_structure, day_ranges, slot_to_row
+            )
 
         # Ensure at least one sheet exists (openpyxl requires this)
         if not wb.worksheets:
@@ -465,7 +622,7 @@ class ScheduleExcelGenerator:
         # Set row heights dynamically
         ws.row_dimensions[9].height = 30.0
         for row in range(10, last_data_row + 1):
-            ws.row_dimensions[row].height = 75.0
+            ws.row_dimensions[row].height = ROW_HEIGHT_NORMAL
 
         # Merge static header cells
         static_merges = [
@@ -595,45 +752,52 @@ class ScheduleExcelGenerator:
 
             # Set borders for day column (merged cell)
             for row in range(start_row, end_row + 1):
-                ws[f"A{row}"].border = THIN_BORDER
+                # Use thick bottom border for last row of day block
+                border = DAY_BOTTOM_BORDER if row == end_row else THIN_BORDER
+                ws[f"A{row}"].border = border
 
             # Time slots and slot numbers
             for i, slot_num in enumerate(slots_to_display):
                 row = start_row + i
                 time_range = get_slot_time_range(slot_num)
 
+                # Use thick bottom border for last row of day block
+                border = DAY_BOTTOM_BORDER if row == end_row else THIN_BORDER
+
                 # Time column (B)
                 ws[f"B{row}"] = time_range
                 ws[f"B{row}"].font = FONT_TIME
                 ws[f"B{row}"].alignment = ALIGN_CENTER
-                ws[f"B{row}"].border = THIN_BORDER
+                ws[f"B{row}"].border = border
 
                 # Slot number column (C)
                 ws[f"C{row}"] = slot_num
                 ws[f"C{row}"].font = FONT_TIME
                 ws[f"C{row}"].alignment = ALIGN_CENTER
-                ws[f"C{row}"].border = THIN_BORDER
+                ws[f"C{row}"].border = border
 
                 # Group columns (D, E, F, G, H) - empty cells with borders
                 for col in ["D", "E", "F", "G", "H"]:
-                    ws[f"{col}{row}"].border = THIN_BORDER
+                    ws[f"{col}{row}"].border = border
                     ws[f"{col}{row}"].alignment = ALIGN_CENTER
                     ws[f"{col}{row}"].font = FONT_CELL
 
     def fill_schedule(
         self,
         ws,
-        grid: dict[str, dict[int, dict[str, dict | None]]],
-        groups: list[str],
+        grid: dict[str, dict[int, dict[str, dict]]],
+        base_groups: list[str],
+        group_structure: dict[str, dict],
         day_ranges: dict[str, tuple[int, int]],
         slot_to_row: dict[int, int],
     ) -> None:
-        """Fill schedule cells with assignment data.
+        """Fill schedule cells with subgroup-aware content.
 
         Args:
             ws: Worksheet.
             grid: Schedule grid from build_schedule_grid.
-            groups: Group names in order.
+            base_groups: Base group names in order.
+            group_structure: Group structure from analyze_group_structure().
             day_ranges: Dynamic row ranges for each day.
             slot_to_row: Mapping from slot number to row offset.
         """
@@ -645,22 +809,41 @@ class ScheduleExcelGenerator:
             if day not in grid:
                 continue
 
-            for slot, slot_groups in grid[day].items():
+            for slot, slot_data in grid[day].items():
                 # Only fill slots that are in our display list
                 if slot not in slot_to_row:
                     continue
 
                 row = start_row + slot_to_row[slot]
+                row_needs_tall_height = False
 
-                for j, group in enumerate(groups):
+                for j, base_group in enumerate(base_groups):
                     if j >= len(group_cols):
                         break
 
                     col = group_cols[j]
-                    assignment = slot_groups.get(group)
+                    subgroup_data = slot_data.get(
+                        base_group, {"sub1": None, "sub2": None}
+                    )
+                    info = group_structure[base_group]
 
-                    if assignment:
-                        ws[f"{col}{row}"] = self.format_cell_content(assignment)
+                    # Check if this cell has both subgroups with different classes
+                    sub1 = subgroup_data["sub1"]
+                    sub2 = subgroup_data["sub2"]
+                    if sub1 and sub2 and sub1.get("stream_id") != sub2.get("stream_id"):
+                        row_needs_tall_height = True
+
+                    content = self.format_cell_content(
+                        sub1,
+                        sub2,
+                        info["has_subgroups"],
+                    )
+                    if content:
+                        ws[f"{col}{row}"] = content
+
+                # Set taller row height if any cell has both subgroups
+                if row_needs_tall_height:
+                    ws.row_dimensions[row].height = ROW_HEIGHT_SUBGROUPS
 
     def save(self, wb: Workbook, output_path: Path) -> None:
         """Save workbook to file.
@@ -715,14 +898,18 @@ def generate_schedule_excel(
 
                 # Load and filter data
                 data = generator.load_json(input_path)
-                assignments, groups = generator.filter_assignments(data)
+                assignments, base_groups, group_structure = (
+                    generator.filter_assignments(data)
+                )
 
-                if not groups:
+                if not base_groups:
                     # Skip if no groups match criteria
                     continue
 
                 # Create and save workbook
-                wb = generator.create_workbook(assignments, groups)
+                wb = generator.create_workbook(
+                    assignments, base_groups, group_structure
+                )
                 output_file = output_dir / f"schedule_{lang}_{yr}y_{wt}.xlsx"
                 generator.save(wb, output_file)
                 generated_files.append(output_file)

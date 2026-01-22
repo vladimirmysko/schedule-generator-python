@@ -4,7 +4,7 @@ from collections import defaultdict
 
 from .constants import get_slot_start_time
 from .models import Day, UnscheduledReason, WeekType
-from .utils import clean_instructor_name
+from .utils import clean_instructor_name, parse_subgroup_info
 
 
 class ConflictTracker:
@@ -173,6 +173,68 @@ class ConflictTracker:
                 return True
 
         return False
+
+    def _check_subgroup_base_conflict(
+        self,
+        group: str,
+        day: Day,
+        slot: int,
+        week_type: WeekType,
+    ) -> tuple[bool, UnscheduledReason, str] | None:
+        """Check for conflicts between subgroups and their base groups.
+
+        When scheduling a subgroup (e.g., "АРХ-15 О -1"), the base group
+        ("АРХ-15 О") must not be scheduled at the same time.
+        When scheduling a base group, no subgroups of it should be scheduled.
+
+        Args:
+            group: Group name to check
+            day: Day of the week
+            slot: Slot number
+            week_type: Week type to check
+
+        Returns:
+            Tuple of (False, reason, details) if conflict found, None otherwise
+        """
+        # Parse the group being scheduled to get base group and subgroup number
+        base_group, subgroup_num = parse_subgroup_info(group)
+
+        # Collect all week types to check
+        week_types_to_check = [week_type]
+        if week_type == WeekType.BOTH:
+            week_types_to_check.extend([WeekType.ODD, WeekType.EVEN])
+        elif week_type in (WeekType.ODD, WeekType.EVEN):
+            week_types_to_check.append(WeekType.BOTH)
+
+        for wt in week_types_to_check:
+            scheduled_groups = self.group_schedule.get((day, slot, wt), set())
+
+            for scheduled_group in scheduled_groups:
+                scheduled_base, scheduled_subgroup = parse_subgroup_info(
+                    scheduled_group
+                )
+
+                # Case 1: Scheduling a subgroup, base group is already scheduled
+                # e.g., scheduling "АРХ-15 О -1" but "АРХ-15 О" is already there
+                if subgroup_num is not None and scheduled_group == base_group:
+                    return (
+                        False,
+                        UnscheduledReason.GROUP_CONFLICT,
+                        f"Subgroup '{group}' conflicts with its base group "
+                        f"'{scheduled_group}' on {day.value} slot {slot}",
+                    )
+
+                # Case 2: Scheduling a base group, a subgroup is already scheduled
+                # e.g., scheduling "АРХ-15 О" but "АРХ-15 О -1" is already there
+                if subgroup_num is None and scheduled_base == group:
+                    return (
+                        False,
+                        UnscheduledReason.GROUP_CONFLICT,
+                        f"Base group '{group}' conflicts with subgroup "
+                        f"'{scheduled_group}' on {day.value} slot {slot}",
+                    )
+
+        return None
 
     def _is_weekly_unavailable(self, instructor: str, day: Day, slot: int) -> bool:
         """Check if instructor is unavailable at this day/time per weekly schedule.
@@ -560,6 +622,15 @@ class ConflictTracker:
                         f"(both weeks)",
                     )
 
+            # Check subgroup/base group conflicts
+            # If scheduling a subgroup, check if base group is scheduled
+            # If scheduling a base group, check if any subgroup is scheduled
+            conflict_result = self._check_subgroup_base_conflict(
+                group, day, slot, week_type
+            )
+            if conflict_result is not None:
+                return conflict_result
+
         return (True, None, "")
 
     def check_consecutive_slots_reason(
@@ -920,3 +991,197 @@ class ConflictTracker:
 
             # Also track subject hours (for 2-hour rule)
             self.reserve_subject_hours(groups, day, subject, 1)
+
+    # ========================
+    # Stage 3 specific methods
+    # ========================
+
+    def get_instructor_scheduled_days(self, instructor: str) -> set[Day]:
+        """Get days where an instructor already has classes scheduled.
+
+        Args:
+            instructor: Instructor name
+
+        Returns:
+            Set of Days where instructor has classes
+        """
+        cleaned_name = clean_instructor_name(instructor)
+        days = set()
+
+        for (day, _, _), instructors in self.instructor_schedule.items():
+            if cleaned_name in instructors:
+                days.add(day)
+
+        return days
+
+    def get_instructor_slots_on_day(
+        self, instructor: str, day: Day, week_type: WeekType = WeekType.BOTH
+    ) -> list[int]:
+        """Get list of slots where an instructor has classes on a day.
+
+        Args:
+            instructor: Instructor name
+            day: Day of the week
+            week_type: Week type to check
+
+        Returns:
+            Sorted list of slot numbers
+        """
+        cleaned_name = clean_instructor_name(instructor)
+        slots = set()
+
+        for slot in range(1, 14):
+            # Check exact week type
+            if cleaned_name in self.instructor_schedule[(day, slot, week_type)]:
+                slots.add(slot)
+
+            # If checking BOTH, also check ODD and EVEN
+            if week_type == WeekType.BOTH:
+                if cleaned_name in self.instructor_schedule[(day, slot, WeekType.ODD)]:
+                    slots.add(slot)
+                if cleaned_name in self.instructor_schedule[(day, slot, WeekType.EVEN)]:
+                    slots.add(slot)
+
+            # If checking specific week, also check BOTH
+            if week_type in (WeekType.ODD, WeekType.EVEN):
+                if cleaned_name in self.instructor_schedule[(day, slot, WeekType.BOTH)]:
+                    slots.add(slot)
+
+        return sorted(slots)
+
+    def find_day_boundary_slots(
+        self,
+        instructor: str,
+        groups: list[str],
+        day: Day,
+        shift_slots: list[int],
+        hours_needed: int,
+        week_type: WeekType = WeekType.BOTH,
+    ) -> list[tuple[int, str]]:
+        """Find available slots at day boundaries for critical subgroup pairs.
+
+        Critical pairs (same instructor teaches both subgroups) must be
+        scheduled at day boundaries so one subgroup can leave before the other.
+
+        Options:
+        - Start of day: Slots 1,2 or 6,7 (start of each shift)
+        - End of day: Last slots of shift
+
+        Args:
+            instructor: Instructor name
+            groups: List of group names
+            day: Day of the week
+            shift_slots: Valid slots for this shift
+            hours_needed: Number of consecutive hours needed
+            week_type: Week type to check
+
+        Returns:
+            List of (start_slot, position) tuples where position is "start" or "end"
+        """
+        if not shift_slots or hours_needed <= 0:
+            return []
+
+        available_positions: list[tuple[int, str]] = []
+
+        # Start of day - first slots in shift
+        start_slot = min(shift_slots)
+        if self._check_consecutive_availability(
+            instructor, groups, day, start_slot, hours_needed, shift_slots, week_type
+        ):
+            available_positions.append((start_slot, "start"))
+
+        # End of day - last slots in shift
+        if len(shift_slots) >= hours_needed:
+            end_slot = max(shift_slots) - hours_needed + 1
+            if end_slot != start_slot:  # Avoid duplicate if shift is small
+                if self._check_consecutive_availability(
+                    instructor,
+                    groups,
+                    day,
+                    end_slot,
+                    hours_needed,
+                    shift_slots,
+                    week_type,
+                ):
+                    available_positions.append((end_slot, "end"))
+
+        return available_positions
+
+    def _check_consecutive_availability(
+        self,
+        instructor: str,
+        groups: list[str],
+        day: Day,
+        start_slot: int,
+        num_slots: int,
+        valid_slots: list[int],
+        week_type: WeekType = WeekType.BOTH,
+    ) -> bool:
+        """Check if consecutive slots are available within valid slots.
+
+        Args:
+            instructor: Instructor name
+            groups: List of group names
+            day: Day of the week
+            start_slot: Starting slot number
+            num_slots: Number of consecutive slots needed
+            valid_slots: List of valid slots for this shift
+            week_type: Week type to check
+
+        Returns:
+            True if all consecutive slots are available and valid
+        """
+        for i in range(num_slots):
+            slot = start_slot + i
+            if slot not in valid_slots:
+                return False
+            if not self.is_slot_available(instructor, groups, day, slot, week_type):
+                return False
+        return True
+
+    def get_group_total_scheduled_hours(
+        self, groups: list[str], week_type: WeekType = WeekType.BOTH
+    ) -> int:
+        """Get total number of scheduled hours for a list of groups.
+
+        Args:
+            groups: List of group names
+            week_type: Week type to check
+
+        Returns:
+            Total number of scheduled hours
+        """
+        total = 0
+        for group in groups:
+            for day in [
+                Day.MONDAY,
+                Day.TUESDAY,
+                Day.WEDNESDAY,
+                Day.THURSDAY,
+                Day.FRIDAY,
+            ]:
+                total += self.get_group_daily_load(group, day)
+        return total
+
+    def get_instructor_total_scheduled_hours(
+        self, instructor: str, week_type: WeekType = WeekType.BOTH
+    ) -> int:
+        """Get total number of scheduled hours for an instructor.
+
+        Args:
+            instructor: Instructor name
+            week_type: Week type to check
+
+        Returns:
+            Total number of scheduled hours
+        """
+        cleaned_name = clean_instructor_name(instructor)
+        total = 0
+
+        for (_, _, wt), instructors in self.instructor_schedule.items():
+            if cleaned_name in instructors:
+                # Count based on week type matching
+                if wt == week_type or wt == WeekType.BOTH or week_type == WeekType.BOTH:
+                    total += 1
+
+        return total

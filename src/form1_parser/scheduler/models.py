@@ -41,6 +41,9 @@ class UnscheduledReason(str, Enum):
     DAILY_LOAD_EXCEEDED = "daily_load_exceeded"
     MAX_WINDOWS_EXCEEDED = "max_windows_exceeded"
     INSTRUCTOR_DAY_CONSTRAINT = "instructor_day_constraint"
+    # Stage 3 specific reasons
+    NO_PARALLEL_SUBGROUP = "no_parallel_subgroup"
+    SUBGROUP_PAIRING_FAILED = "subgroup_pairing_failed"
 
 
 @dataclass
@@ -119,6 +122,41 @@ class PracticalStream:
     complexity_score: float = 0.0
     instructor_available_slots: int = 0  # Used for priority sorting
     viable_positions: int = 0  # Number of valid day/slot combinations (computed at runtime)
+
+    @property
+    def max_hours(self) -> int:
+        """Maximum hours needed per week."""
+        return max(self.hours_odd_week, self.hours_even_week)
+
+
+@dataclass
+class Stage3PracticalStream:
+    """Prepared practical stream for Stage 3 scheduling (no lecture dependency).
+
+    Stage 3 handles practical streams without associated lectures,
+    primarily language subjects (Foreign Language, Russian, Kazakh)
+    and some art/architecture subjects.
+    """
+
+    id: str
+    subject: str
+    instructor: str
+    language: str
+    groups: list[str]
+    base_groups: list[str]  # Base groups without subgroup suffix
+    subgroup_numbers: list[int | None]  # Subgroup numbers if present (1, 2, or None)
+    student_count: int
+    hours_odd_week: int
+    hours_even_week: int
+    shift: Shift
+    sheet: str
+    stream_type: str  # "practical" or "lab"
+    is_subgroup: bool
+    is_critical_pair: bool = False  # Same instructor teaches both subgroups
+    complexity_score: float = 0.0
+    viable_positions: int = 0
+    paired_stream_id: str | None = None  # For subgroup pairing
+    instructor_available_slots: int = 0
 
     @property
     def max_hours(self) -> int:

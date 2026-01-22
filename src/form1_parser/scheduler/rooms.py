@@ -6,7 +6,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from ..normalization import normalize_instructor_name
-from .models import Day, LectureStream, PracticalStream, Room, WeekType
+from .models import Day, LectureStream, PracticalStream, Room, Stage3PracticalStream, WeekType
 
 
 class RoomManager:
@@ -25,6 +25,7 @@ class RoomManager:
         subject_rooms: dict | None = None,
         instructor_rooms: dict | None = None,
         group_buildings: dict | None = None,
+        stream_address_exclusions: dict | None = None,
     ) -> None:
         """Initialize the room manager.
 
@@ -33,15 +34,32 @@ class RoomManager:
             subject_rooms: Dictionary from subject-rooms.json
             instructor_rooms: Dictionary from instructor-rooms.json
             group_buildings: Dictionary from group-buildings.json
+            stream_address_exclusions: Dictionary mapping stream_id -> list of excluded addresses
         """
         self.rooms = self._load_rooms(rooms_csv)
         self.subject_rooms = subject_rooms or {}
         self.instructor_rooms = instructor_rooms or {}
         self.group_buildings = group_buildings or {}
+        self.stream_address_exclusions = stream_address_exclusions or {}
         # (day, slot, week_type) -> set of room names
         self.room_schedule: dict[tuple[Day, int, WeekType], set[str]] = defaultdict(set)
         # Build set of reserved addresses and their allowed specialties
         self._reserved_addresses = self._build_reserved_addresses()
+
+    def _is_address_excluded_for_stream(self, stream_id: str, address: str) -> bool:
+        """Check if an address is excluded for a specific stream.
+
+        Args:
+            stream_id: Stream ID to check
+            address: Address to check
+
+        Returns:
+            True if the address is excluded for this stream
+        """
+        if stream_id not in self.stream_address_exclusions:
+            return False
+        excluded_addresses = self.stream_address_exclusions[stream_id]
+        return address in excluded_addresses
 
     def _build_reserved_addresses(self) -> dict[str, set[str]]:
         """Build mapping of reserved addresses to allowed specialties.
@@ -130,11 +148,18 @@ class RoomManager:
         for loc in locations:
             address = loc.get("address", "")
             room_name = loc.get("room", "")
-            # Find matching room in our room list
-            for room in self.rooms:
-                if room.name == room_name and room.address == address:
-                    allowed_rooms.append(room)
-                    break
+
+            if room_name:
+                # Specific room specified - find exact match
+                for room in self.rooms:
+                    if room.name == room_name and room.address == address:
+                        allowed_rooms.append(room)
+                        break
+            else:
+                # Only address specified - all rooms at this address are allowed
+                for room in self.rooms:
+                    if room.address == address:
+                        allowed_rooms.append(room)
 
         return allowed_rooms
 
@@ -619,6 +644,91 @@ class RoomManager:
         # 4. General pool - find by capacity (excludes reserved buildings for other specialties)
         return self._find_available_by_capacity(
             self.rooms,
+            stream.student_count,
+            day,
+            slot,
+            week_type,
+            allow_special=False,
+            groups=stream.groups,
+        )
+
+    def find_room_for_stage3(
+        self,
+        stream: Stage3PracticalStream,
+        day: Day,
+        slot: int,
+        week_type: WeekType = WeekType.BOTH,
+    ) -> Room | None:
+        """Find a room for a Stage 3 practical stream with priority-based selection.
+
+        Priority order:
+        1. Subject-specific rooms for practicals (from subject-rooms.json)
+        2. Instructor room preferences for practicals (from instructor-rooms.json)
+        3. Group building preferences (from group-buildings.json)
+        4. General pool - find by capacity
+
+        Args:
+            stream: Stage3PracticalStream to find room for
+            day: Day of the week
+            slot: Slot number
+            week_type: Week type to check
+
+        Returns:
+            Suitable Room or None if not found
+        """
+        # Filter out rooms at excluded addresses for this stream
+        def filter_excluded(rooms: list[Room]) -> list[Room]:
+            return [
+                r
+                for r in rooms
+                if not self._is_address_excluded_for_stream(stream.id, r.address)
+            ]
+
+        # 1. Subject-specific rooms for practicals (strict - no fallback if defined)
+        if stream.subject in self.subject_rooms:
+            allowed = self._get_subject_rooms(stream.subject, "practice")
+            if allowed:
+                allowed = filter_excluded(allowed)
+                room = self._find_available_by_capacity(
+                    allowed,
+                    stream.student_count,
+                    day,
+                    slot,
+                    week_type,
+                    allow_special=True,
+                )
+                return room  # Returns room or None, no fallback to general pool
+
+        # 2. Instructor room preferences for practicals
+        clean_name = self._clean_instructor_name(stream.instructor)
+        if clean_name in self.instructor_rooms:
+            allowed = self._get_instructor_rooms(clean_name, "practice")
+            allowed = filter_excluded(allowed)
+            room = self._find_available_by_capacity(
+                allowed, stream.student_count, day, slot, week_type, allow_special=True
+            )
+            if room:
+                return room
+
+        # 3. Group building preferences
+        preferred_rooms = self._get_group_building_rooms(stream.groups)
+        if preferred_rooms:
+            preferred_rooms = filter_excluded(preferred_rooms)
+            room = self._find_available_by_capacity(
+                preferred_rooms,
+                stream.student_count,
+                day,
+                slot,
+                week_type,
+                allow_special=False,
+            )
+            if room:
+                return room
+
+        # 4. General pool - find by capacity (excludes reserved buildings for other specialties)
+        general_rooms = filter_excluded(self.rooms)
+        return self._find_available_by_capacity(
+            general_rooms,
             stream.student_count,
             day,
             slot,

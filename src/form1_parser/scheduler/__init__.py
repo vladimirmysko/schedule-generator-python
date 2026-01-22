@@ -6,6 +6,10 @@ from .algorithm import (
     create_scheduler,
     create_stage2_scheduler,
 )
+from .stage3 import (
+    Stage3Scheduler,
+    create_stage3_scheduler,
+)
 from .conflicts import ConflictTracker
 from .constants import (
     FIRST_SHIFT_EXTENDED_SLOTS,
@@ -41,19 +45,25 @@ from .models import (
     Room,
     ScheduleResult,
     ScheduleStatistics,
+    Stage3PracticalStream,
     TimeSlot,
     WeekType,
 )
 from .rooms import RoomManager
 from .utils import (
     build_lecture_dependency_map,
+    build_subgroup_pairs,
+    calculate_stage3_complexity_score,
     clean_instructor_name,
     determine_shift,
     filter_stage1_lectures,
     filter_stage2_practicals,
+    filter_stage3_practicals,
     parse_group_year,
     parse_specialty_code,
+    parse_subgroup_info,
     sort_practicals_by_complexity,
+    sort_stage3_by_complexity,
     sort_streams_by_priority,
 )
 
@@ -61,8 +71,10 @@ __all__ = [
     # Algorithm
     "Stage1Scheduler",
     "Stage2Scheduler",
+    "Stage3Scheduler",
     "create_scheduler",
     "create_stage2_scheduler",
+    "create_stage3_scheduler",
     # Conflicts
     "ConflictTracker",
     # Constants
@@ -96,6 +108,7 @@ __all__ = [
     "LectureDependency",
     "LectureStream",
     "PracticalStream",
+    "Stage3PracticalStream",
     "Room",
     "Assignment",
     "ScheduleStatistics",
@@ -105,11 +118,16 @@ __all__ = [
     # Utils
     "parse_group_year",
     "parse_specialty_code",
+    "parse_subgroup_info",
     "determine_shift",
     "clean_instructor_name",
     "filter_stage1_lectures",
     "filter_stage2_practicals",
+    "filter_stage3_practicals",
     "sort_streams_by_priority",
     "sort_practicals_by_complexity",
+    "sort_stage3_by_complexity",
     "build_lecture_dependency_map",
+    "build_subgroup_pairs",
+    "calculate_stage3_complexity_score",
 ]

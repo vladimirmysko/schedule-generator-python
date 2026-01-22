@@ -377,10 +377,10 @@ Or with class-type-specific assignments:
 
 ### Location Object
 
-| Field     | Type   | Description                               |
-| --------- | ------ | ----------------------------------------- |
-| `address` | string | Building address (must match `rooms.csv`) |
-| `room`    | string | Room number/name (must match `rooms.csv`) |
+| Field     | Type   | Description                                                                    |
+| --------- | ------ | ------------------------------------------------------------------------------ |
+| `address` | string | Building address (must match `rooms.csv`)                                      |
+| `room`    | string | (Optional) Room number/name. If omitted, any room in the building is allowed   |
 
 ### Example
 
@@ -521,9 +521,17 @@ Or with class-type-specific restrictions:
       { "address": "ул. Ихсанова, 44/1", "room": "401" },
       { "address": "ул. Ихсанова, 44/1", "room": "403" }
     ]
+  },
+  "Орыс тілі": {
+    "practice": [
+      { "address": "ул. Ихсанова, 44/1" },
+      { "address": "пр. Н.Назарбаева, 208" }
+    ]
   }
 }
 ```
+
+When only `address` is specified (without `room`), the subject can use any available room in that building. This is commonly used for language subjects (Орыс тілі, Шетел тілі, Қазақ тілі) that don't require specialized equipment.
 
 ---
 

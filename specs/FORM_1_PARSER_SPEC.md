@@ -1,8 +1,8 @@
 # Form-1 Parser Specification
 ## University Schedule Stream Analysis Tool
 
-**Version:** 1.0  
-**Date:** January 2025  
+**Version:** 1.1
+**Date:** January 2026
 **Target:** Claude Code Implementation
 
 ---
@@ -144,37 +144,7 @@ Row | Group     | Lec | Prac | Lab | Instructor
 
 ---
 
-### 4.3 Pattern 2: Vertical - Separate Blocks
-**Characteristics:**
-- Same group name appears MULTIPLE times
-- Groups repeat in separate blocks (lecture block, practical block, lab block)
-- Block boundaries often marked by number in column 0
-
-**Detection:** `max(group_counts) > 1` AND groups do NOT have subgroup notation
-
-**Example:**
-```
-LECTURE BLOCK:
-Row | Group    | Lec | Prac | Lab
-----|----------|-----|------|----
-1   | АРХ-21 О | 15  |   -  |  -
-2   | АРХ-23 О |  -  |   -  |  -
-
-PRACTICAL BLOCK:
-Row | Group    | Lec | Prac | Lab
-----|----------|-----|------|----
-3   | АРХ-21 О |  -  |  38  |  -
-4   | АРХ-23 О |  -  |   -  |  -
-```
-
-**Stream Rules:**
-- Lecture: Unique instructors in lecture block
-- Practical: Each row with Prac > 0 in practical block
-- Lab: Each row with Lab > 0 in lab block
-
----
-
-### 4.4 Implicit Subgroups (Same Group Repeated for Labs)
+### 4.3 Implicit Subgroups (Same Group Repeated for Labs)
 **Characteristics:**
 - Same group name appears multiple times WITHOUT explicit subgroup notation
 - Typically used for lab sessions (equipment/space constraints)
@@ -197,7 +167,7 @@ Row | Group    | Lec | Prac | Lab | Instructor
 
 ---
 
-### 4.5 Explicit Subgroups (Marked Notation)
+### 4.4 Explicit Subgroups (Marked Notation)
 **Characteristics:**
 - Group names contain explicit subgroup markers
 - Each subgroup row = separate stream
@@ -227,7 +197,7 @@ Row | Group         | Prac | Instructor
 
 ---
 
-### 4.6 Study Form Indicators (NOT Subgroups)
+### 4.5 Study Form Indicators (NOT Subgroups)
 **Characteristics:**
 - Notation indicates study program type, NOT subgroups
 - Treat as completely separate, independent groups
@@ -253,17 +223,38 @@ STUDY_FORM_PATTERN = r'/[уг]/'
 Always use the **LAST (rightmost)** column containing instructor names.
 
 ### 5.2 Detection Algorithm
+Two-step approach: first check known positions, then fall back to marker scan.
+
 ```python
-def find_instructor_column(df: pd.DataFrame) -> int:
-    """Find the rightmost column with instructor names."""
-    INSTRUCTOR_MARKERS = ['проф', 'а.о.', 'с.п.', 'асс', 'доц']
-    
+def find_instructor_column(df: pd.DataFrame, sheet_name: str) -> int:
+    """Find the rightmost column with instructor names.
+
+    Args:
+        df: DataFrame of the sheet
+        sheet_name: Name of the sheet
+
+    Returns:
+        Column index of the instructor column
+
+    Raises:
+        InstructorColumnNotFoundError: If instructor column cannot be found
+    """
+    # Step 1: Check known column positions first
+    if sheet_name in KNOWN_INSTRUCTOR_COLUMNS:
+        known_col = KNOWN_INSTRUCTOR_COLUMNS[sheet_name]
+        if known_col < len(df.columns):
+            return known_col
+
+    # Step 2: Search from right to left for instructor markers
     for col in range(len(df.columns) - 1, -1, -1):
-        for row in range(11, min(30, len(df))):
+        for row in range(11, min(50, len(df))):
+            if row >= len(df):
+                break
             val = str(df.iloc[row, col]).lower() if pd.notna(df.iloc[row, col]) else ''
             if any(marker in val for marker in INSTRUCTOR_MARKERS):
                 return col
-    return None
+
+    raise InstructorColumnNotFoundError(sheet_name)
 ```
 
 ### 5.3 Known Column Positions
@@ -352,9 +343,11 @@ def calculate_weekly_hours(total_hours: int) -> tuple[int, int]:
 
 ### 7.1 Stream Model
 ```python
-from dataclasses import dataclass
-from typing import List, Optional
+from dataclasses import dataclass, field
+from typing import List, Optional, Self
 from enum import Enum
+
+from .exceptions import InvalidHoursError
 
 class StreamType(Enum):
     LECTURE = "lecture"
@@ -367,13 +360,16 @@ class WeeklyHours:
     total: int                       # Total semester hours (from spreadsheet)
     odd_week: int                    # Hours on odd weeks (1,3,5,7,9,11,13,15)
     even_week: int                   # Hours on even weeks (2,4,6,8,10,12,14)
-    
+
     @classmethod
-    def from_total(cls, total_hours: int) -> 'WeeklyHours':
+    def from_total(cls, total_hours: int) -> Self:
         """Calculate weekly hours from total semester hours."""
+        if total_hours == 0:
+            return cls(total=0, odd_week=0, even_week=0)
+
         remainder = total_hours % 15
         base = total_hours // 15
-        
+
         if remainder == 0:
             return cls(total=total_hours, odd_week=base, even_week=base)
         elif remainder == 8:
@@ -381,7 +377,10 @@ class WeeklyHours:
         elif remainder == 7:
             return cls(total=total_hours, odd_week=base, even_week=base + 1)
         else:
-            raise ValueError(f"Invalid total hours: {total_hours}")
+            raise InvalidHoursError(total_hours)
+
+    def __str__(self) -> str:
+        return f"{self.total}h (odd:{self.odd_week}, even:{self.even_week})"
 
 @dataclass
 class Stream:
@@ -395,8 +394,29 @@ class Stream:
     student_count: int               # Total students in stream
     sheet: str                       # Source sheet name
     rows: List[int]                  # Source row numbers
-    is_subgroup: bool                # True if explicit subgroup notation
-    is_implicit_subgroup: bool       # True if implicit subgroup (repeated group)
+    is_subgroup: bool = False        # True if explicit subgroup notation
+    is_implicit_subgroup: bool = False  # True if implicit subgroup (repeated group)
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "id": self.id,
+            "subject": self.subject,
+            "stream_type": self.stream_type.value,
+            "instructor": self.instructor,
+            "language": self.language,
+            "hours": {
+                "total": self.hours.total,
+                "odd_week": self.hours.odd_week,
+                "even_week": self.hours.even_week,
+            },
+            "groups": self.groups,
+            "student_count": self.student_count,
+            "sheet": self.sheet,
+            "rows": self.rows,
+            "is_subgroup": self.is_subgroup,
+            "is_implicit_subgroup": self.is_implicit_subgroup,
+        }
 ```
 
 ### 7.2 Subject Summary
@@ -405,13 +425,45 @@ class Stream:
 class SubjectSummary:
     subject: str
     sheet: str
-    pattern: str                     # "1a", "1b", "2", "explicit_subgroup", "implicit_subgroup"
-    lecture_streams: List[Stream]
-    practical_streams: List[Stream]
-    lab_streams: List[Stream]
-    total_streams: int
-    total_hours: int
-    instructors: List[str]
+    pattern: str                     # "1a", "1b", "implicit_subgroup", "explicit_subgroup"
+    lecture_streams: List[Stream] = field(default_factory=list)
+    practical_streams: List[Stream] = field(default_factory=list)
+    lab_streams: List[Stream] = field(default_factory=list)
+
+    @property
+    def total_streams(self) -> int:
+        """Total number of streams for this subject."""
+        return len(self.lecture_streams) + len(self.practical_streams) + len(self.lab_streams)
+
+    @property
+    def total_hours(self) -> int:
+        """Total hours across all streams."""
+        total = 0
+        for stream in self.lecture_streams + self.practical_streams + self.lab_streams:
+            total += stream.hours.total
+        return total
+
+    @property
+    def instructors(self) -> List[str]:
+        """List of unique instructors for this subject."""
+        instructors = set()
+        for stream in self.lecture_streams + self.practical_streams + self.lab_streams:
+            instructors.add(stream.instructor)
+        return sorted(instructors)
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "subject": self.subject,
+            "sheet": self.sheet,
+            "pattern": self.pattern,
+            "total_streams": self.total_streams,
+            "total_hours": self.total_hours,
+            "instructors": self.instructors,
+            "lecture_streams": [s.to_dict() for s in self.lecture_streams],
+            "practical_streams": [s.to_dict() for s in self.practical_streams],
+            "lab_streams": [s.to_dict() for s in self.lab_streams],
+        }
 ```
 
 ### 7.3 Parser Output
@@ -420,13 +472,35 @@ class SubjectSummary:
 class ParseResult:
     file_path: str
     parse_date: str
-    sheets_processed: List[str]
-    total_subjects: int
-    total_streams: int
-    subjects: List[SubjectSummary]
-    streams: List[Stream]
-    errors: List[str]
-    warnings: List[str]
+    sheets_processed: List[str] = field(default_factory=list)
+    subjects: List[SubjectSummary] = field(default_factory=list)
+    streams: List[Stream] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+
+    @property
+    def total_subjects(self) -> int:
+        """Total number of unique subjects."""
+        return len(self.subjects)
+
+    @property
+    def total_streams(self) -> int:
+        """Total number of streams."""
+        return len(self.streams)
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "file_path": self.file_path,
+            "parse_date": self.parse_date,
+            "sheets_processed": self.sheets_processed,
+            "total_subjects": self.total_subjects,
+            "total_streams": self.total_streams,
+            "subjects": [s.to_dict() for s in self.subjects],
+            "streams": [s.to_dict() for s in self.streams],
+            "errors": self.errors,
+            "warnings": self.warnings,
+        }
 ```
 
 ---
@@ -438,11 +512,11 @@ class ParseResult:
 1. Load Excel file
 2. For each sheet:
    a. Detect data start row
-   b. Find instructor column (last column with names)
+   b. Find instructor column (check known positions, then scan for markers)
    c. Extract raw data with forward-filled subject names
    d. Group rows by subject
    e. For each subject:
-      i.   Detect pattern (1a, 1b, 2, subgroups)
+      i.   Detect pattern (1a, 1b, implicit_subgroup, explicit_subgroup)
       ii.  Apply pattern-specific stream extraction
       iii. Create Stream objects
 3. Aggregate results
@@ -451,34 +525,41 @@ class ParseResult:
 
 ### 8.2 Pattern Detection Algorithm
 ```python
-def detect_pattern(subject_data: pd.DataFrame) -> str:
+def detect_pattern(subject_data: pd.DataFrame, group_col: str, practical_col: str) -> str:
     """
     Detect which data entry pattern a subject uses.
-    
-    Returns: "1a", "1b", "2", "explicit_subgroup", "implicit_subgroup"
+
+    Algorithm:
+    1. Has explicit subgroup notation? → "explicit_subgroup"
+    2. Same group appears multiple times? → "implicit_subgroup"
+    3. Practical fill rate > 0.5? → "1a" (individual)
+    4. Otherwise → "1b" (merged)
+
+    Returns: "1a", "1b", "implicit_subgroup", or "explicit_subgroup"
     """
-    # Check for explicit subgroups
-    has_explicit = subject_data['Group'].str.contains(
-        EXPLICIT_SUBGROUP_PATTERN, regex=True, na=False
-    ).any()
-    
-    if has_explicit:
+    groups = subject_data[group_col].dropna()
+
+    if groups.empty:
+        return "1a"  # Default to simplest pattern
+
+    # Check for explicit subgroups first
+    if groups.str.contains(EXPLICIT_SUBGROUP_PATTERN, regex=True, na=False).any():
         return "explicit_subgroup"
-    
-    # Count group occurrences (excluding explicit subgroups)
-    group_counts = subject_data['Group'].value_counts()
-    max_repeats = group_counts.max()
-    
-    if max_repeats > 1:
-        return "implicit_subgroup"  # Same group repeated = implicit subgroups
-    
+
+    # Check for implicit subgroups (same group repeated)
+    group_counts = groups.value_counts()
+    if group_counts.max() > 1:
+        return "implicit_subgroup"
+
     # Check practical fill rate for 1a vs 1b
-    prac_fill_rate = subject_data['Practicals'].notna().mean()
-    
-    if prac_fill_rate > 0.5:
+    practical_values = subject_data[practical_col]
+    filled = practical_values.apply(lambda x: pd.notna(x) and float(x) > 0 if pd.notna(x) else False)
+    fill_rate = filled.mean()
+
+    if fill_rate > 0.5:
         return "1a"  # Most rows have practical hours
     else:
-        return "1b"  # Merged practicals (Chemistry-style)
+        return "1b"  # Merged practicals
 ```
 
 ### 8.3 Stream Extraction by Pattern
@@ -642,6 +723,10 @@ class InstructorColumnNotFoundError(ParseError):
 class InvalidDataError(ParseError):
     """Data validation failed."""
     pass
+
+class InvalidHoursError(ParseError):
+    """Hours value doesn't satisfy formula: 8×odd + 7×even = total."""
+    pass
 ```
 
 ### 10.2 Error Recovery
@@ -714,7 +799,10 @@ form1-parser/
 │       ├── models.py           # Data classes
 │       ├── validators.py       # Validation logic
 │       ├── constants.py        # Regex patterns, column indices
-│       └── utils.py            # Helper functions
+│       ├── utils.py            # Helper functions
+│       ├── exceptions.py       # Custom exception classes
+│       ├── normalization.py    # Instructor name normalization
+│       └── exporters.py        # JSON/CSV/Excel export functions
 ├── tests/
 │   ├── __init__.py
 │   ├── test_parser.py
@@ -748,7 +836,9 @@ COL_LABS = 10
 EXPLICIT_SUBGROUP_PATTERN = r'/[12]/|\\[12]\\|\s-[12]$'
 STUDY_FORM_PATTERN = r'/[уг]/'
 GROUP_NAME_PATTERN = r'^[А-ЯӘҒҚҢӨҰҮІа-яәғқңөұүі]+-\d{2}'
-INSTRUCTOR_MARKERS = ['проф', 'а.о.', 'с.п.', 'асс', 'доц']
+
+# Instructor detection markers
+INSTRUCTOR_MARKERS = ['проф', 'а.о.', 'с.п.', 'асс', 'доц', 'д.', 'prof.', 'prof']
 
 # Data start markers
 DATA_START_MARKERS = ['1', '2 семестр', '2семестр']
@@ -756,9 +846,32 @@ DATA_START_MARKERS = ['1', '2 семестр', '2семестр']
 # Languages
 LANGUAGE_KAZAKH = 'каз'
 LANGUAGE_RUSSIAN = 'орыс'
+VALID_LANGUAGES = {LANGUAGE_KAZAKH, LANGUAGE_RUSSIAN}
 
 # Sheet names
 SHEET_NAMES = ['оод (2)', 'эиб', 'юр', 'стр', 'эл', 'ттт', 'нд']
+
+# Known instructor column positions per sheet
+KNOWN_INSTRUCTOR_COLUMNS = {
+    'оод (2)': 25,
+    'эиб': 25,
+    'юр': 25,
+    'стр': 26,
+    'эл': 25,
+    'ттт': 25,
+    'нд': 26,
+}
+
+# Academic weeks
+ODD_WEEKS_COUNT = 8   # 1, 3, 5, 7, 9, 11, 13, 15
+EVEN_WEEKS_COUNT = 7  # 2, 4, 6, 8, 10, 12, 14
+TOTAL_WEEKS = ODD_WEEKS_COUNT + EVEN_WEEKS_COUNT  # 15
+
+# Pattern names
+PATTERN_1A = '1a'
+PATTERN_1B = '1b'
+PATTERN_IMPLICIT_SUBGROUP = 'implicit_subgroup'
+PATTERN_EXPLICIT_SUBGROUP = 'explicit_subgroup'
 ```
 
 ---
@@ -800,6 +913,7 @@ for subject in result.subjects:
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | Jan 2025 | Initial specification |
+| 1.1 | Jan 2026 | Corrected patterns (removed "Pattern 2"), added missing constants, updated file structure, added model serialization methods |
 
 ---
 

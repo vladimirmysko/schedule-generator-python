@@ -15,7 +15,7 @@ from .constants import (
     YEAR_SHIFT_MAP,
     Shift,
 )
-from .models import Day, LectureDependency, LectureStream, PracticalStream
+from .models import Day, LectureDependency, LectureStream, PracticalStream, Stage3PracticalStream
 
 # Subjects to exclude from Stage 2 (subgroups, no paired lecture)
 STAGE2_EXCLUDED_SUBJECTS = ["Шетел тілі", "Орыс тілі", "Қазақ тілі"]
@@ -611,6 +611,352 @@ def sort_practicals_by_complexity(
 
     Args:
         streams: List of PracticalStream objects
+
+    Returns:
+        Sorted list with most complex (hardest to schedule) first
+    """
+    return sorted(streams, key=lambda s: -s.complexity_score)
+
+
+# ===========================
+# Stage 3 utility functions
+# ===========================
+
+# Subjects that are in Stage 3 (practical-only, no lectures)
+STAGE3_SUBJECTS = ["Шетел тілі", "Орыс тілі", "Қазақ тілі"]
+
+# Language subjects that often have many parallel streams
+STAGE3_LANGUAGE_SUBJECTS = ["Шетел тілі", "Орыс тілі", "Қазақ тілі"]
+
+
+def parse_subgroup_info(group_name: str) -> tuple[str, int | None]:
+    """Extract base group name and subgroup number from group name.
+
+    Subgroup patterns:
+    - /1/, /2/ - explicit subgroup notation
+    - \\1\\, \\2\\ - alternative notation (backslash)
+    - -1, -2 at end - dash notation
+
+    Args:
+        group_name: Group name like "АРХ-11 О /1/" or "АРХ-11 О"
+
+    Returns:
+        Tuple of (base_group_name, subgroup_number or None)
+    """
+    # Pattern 1: /1/ or /2/ (forward slashes)
+    match = re.search(r"\s*/(\d)/\s*$", group_name)
+    if match:
+        subgroup_num = int(match.group(1))
+        base_name = group_name[: match.start()].strip()
+        return (base_name, subgroup_num)
+
+    # Pattern 2: \1\ or \2\ (backslashes)
+    match = re.search(r"\s*\\(\d)\\\s*$", group_name)
+    if match:
+        subgroup_num = int(match.group(1))
+        base_name = group_name[: match.start()].strip()
+        return (base_name, subgroup_num)
+
+    # Pattern 3: -1 or -2 at the end (after space)
+    match = re.search(r"\s+-(\d)\s*$", group_name)
+    if match:
+        subgroup_num = int(match.group(1))
+        base_name = group_name[: match.start()].strip()
+        return (base_name, subgroup_num)
+
+    # No subgroup notation found
+    return (group_name, None)
+
+
+def is_subgroup_stream(groups: list[str]) -> bool:
+    """Check if a stream has subgroup notation in any group.
+
+    Args:
+        groups: List of group names
+
+    Returns:
+        True if any group has subgroup notation
+    """
+    for group in groups:
+        _, subgroup_num = parse_subgroup_info(group)
+        if subgroup_num is not None:
+            return True
+    return False
+
+
+def get_base_groups(groups: list[str]) -> list[str]:
+    """Get base group names (without subgroup notation).
+
+    Args:
+        groups: List of group names
+
+    Returns:
+        List of base group names
+    """
+    base_groups = []
+    for group in groups:
+        base_name, _ = parse_subgroup_info(group)
+        base_groups.append(base_name)
+    return base_groups
+
+
+def get_subgroup_numbers(groups: list[str]) -> list[int | None]:
+    """Get subgroup numbers from group names.
+
+    Args:
+        groups: List of group names
+
+    Returns:
+        List of subgroup numbers (1, 2, or None)
+    """
+    subgroup_nums = []
+    for group in groups:
+        _, subgroup_num = parse_subgroup_info(group)
+        subgroup_nums.append(subgroup_num)
+    return subgroup_nums
+
+
+def build_subjects_with_lectures(streams: list[dict]) -> set[str]:
+    """Build set of subjects that have lecture streams.
+
+    Args:
+        streams: List of all stream dictionaries from parsed JSON
+
+    Returns:
+        Set of subject names that have lecture streams
+    """
+    subjects_with_lectures: set[str] = set()
+    for stream in streams:
+        if stream.get("stream_type") == "lecture":
+            subject = stream.get("subject", "")
+            if subject:
+                subjects_with_lectures.add(subject)
+    return subjects_with_lectures
+
+
+def filter_stage3_practicals(
+    streams: list[dict],
+    scheduled_stream_ids: set[str],
+    instructor_availability: list[dict] | None = None,
+    second_shift_groups: set[str] | None = None,
+) -> list[Stage3PracticalStream]:
+    """Filter and convert streams to Stage3PracticalStream objects.
+
+    Stage 3 criteria:
+    1. Type is "practical" (NOT "lab")
+    2. Subject has NO lectures
+    3. NOT already scheduled in Stage 2
+
+    Args:
+        streams: List of stream dictionaries from parsed JSON
+        scheduled_stream_ids: Set of stream IDs already scheduled in Stage 1/2
+        instructor_availability: List of instructor availability records
+        second_shift_groups: Set of groups that require second shift scheduling
+
+    Returns:
+        List of Stage3PracticalStream objects ready for scheduling
+    """
+    # Build set of subjects that have lectures
+    subjects_with_lectures = build_subjects_with_lectures(streams)
+
+    stage3_streams: list[Stage3PracticalStream] = []
+
+    for stream in streams:
+        stream_type = stream.get("stream_type", "")
+
+        # Only practicals
+        if stream_type != "practical":
+            continue
+
+        stream_id = stream.get("id", "")
+
+        # Skip if already scheduled
+        if stream_id in scheduled_stream_ids:
+            continue
+
+        subject = stream.get("subject", "")
+
+        # Skip subjects that have lectures (handled in Stage 2)
+        if subject in subjects_with_lectures:
+            continue
+
+        groups = stream.get("groups", [])
+        hours = stream.get("hours", {})
+        odd_week = hours.get("odd_week", 0)
+        even_week = hours.get("even_week", 0)
+
+        # Skip streams with no hours
+        if odd_week == 0 and even_week == 0:
+            continue
+
+        instructor = stream.get("instructor", "")
+
+        # Determine if this is a subgroup stream
+        is_subgroup = is_subgroup_stream(groups)
+        base_groups = get_base_groups(groups)
+        subgroup_numbers = get_subgroup_numbers(groups)
+
+        # Determine shift (with second shift override)
+        shift = determine_practical_shift(groups, second_shift_groups)
+
+        # Calculate instructor available slots
+        available_slots = calculate_instructor_available_slots(
+            instructor, shift, instructor_availability
+        )
+
+        # Infer language
+        language = _infer_language_from_groups(groups)
+
+        stage3_stream = Stage3PracticalStream(
+            id=stream_id,
+            subject=subject,
+            instructor=instructor,
+            language=language,
+            groups=groups,
+            base_groups=base_groups,
+            subgroup_numbers=subgroup_numbers,
+            student_count=stream.get("student_count", 0),
+            hours_odd_week=odd_week,
+            hours_even_week=even_week,
+            shift=shift,
+            sheet=stream.get("sheet", ""),
+            stream_type=stream_type,
+            is_subgroup=is_subgroup,
+            is_critical_pair=False,  # Will be set by build_subgroup_pairs
+            complexity_score=0.0,  # Will be set later
+            instructor_available_slots=available_slots,
+        )
+
+        stage3_streams.append(stage3_stream)
+
+    return stage3_streams
+
+
+def build_subgroup_pairs(
+    streams: list[Stage3PracticalStream],
+) -> dict[str, list[Stage3PracticalStream]]:
+    """Build mapping of subgroup pairs by (base_group, subject).
+
+    Also identifies critical pairs (same instructor teaches both subgroups)
+    and sets the is_critical_pair flag on the streams.
+
+    Args:
+        streams: List of Stage3PracticalStream objects
+
+    Returns:
+        Dict mapping (base_group, subject) tuple key to list of streams
+    """
+    # Group streams by (base_group, subject)
+    pairs: dict[str, list[Stage3PracticalStream]] = {}
+
+    for stream in streams:
+        if not stream.is_subgroup:
+            continue
+
+        # For each base group in the stream
+        for base_group in stream.base_groups:
+            key = f"{base_group}:{stream.subject}"
+            if key not in pairs:
+                pairs[key] = []
+            pairs[key].append(stream)
+
+    # Identify critical pairs (same instructor teaches both subgroups)
+    for key, pair_streams in pairs.items():
+        if len(pair_streams) >= 2:
+            # Check if same instructor
+            instructors = {
+                clean_instructor_name(s.instructor) for s in pair_streams
+            }
+            if len(instructors) == 1:
+                # Same instructor teaches both subgroups - critical pair
+                for s in pair_streams:
+                    s.is_critical_pair = True
+
+            # Set paired_stream_id for subgroups
+            # For simplicity, link each stream to the first "other" stream in the pair
+            for i, stream in enumerate(pair_streams):
+                for j, other in enumerate(pair_streams):
+                    if i != j:
+                        stream.paired_stream_id = other.id
+                        break
+
+    return pairs
+
+
+def calculate_stage3_complexity_score(
+    stream: Stage3PracticalStream,
+    instructor_load: int = 0,
+    existing_group_slots: int = 0,
+) -> float:
+    """Calculate complexity score for a Stage 3 practical stream.
+
+    Higher score = more constrained = should be scheduled first.
+
+    Formula:
+    - hours_max * 20: More hours = harder to fit
+    - unavailable_slots * 5: Instructor constraints
+    - 30 if is_subgroup: Subgroups need pairing
+    - 50 if is_critical_pair: Same instructor = hardest
+    - 15 if is_language: Many parallel streams
+    - instructor_load * 3: Busy instructors
+    - existing_slots * 2: Groups with classes already
+    - num_groups * 5: More groups = more conflicts
+
+    Args:
+        stream: Stage3PracticalStream to evaluate
+        instructor_load: Number of classes already scheduled for this instructor
+        existing_group_slots: Total slots already filled for groups in this stream
+
+    Returns:
+        Complexity score (higher = should be scheduled first)
+    """
+    score = 0.0
+
+    # Hours requirement (more hours = harder to fit)
+    score += stream.max_hours * 20
+
+    # Instructor availability (fewer slots = more constrained)
+    # Max slots is ~40 (5 days x 8 slots for second shift), invert
+    max_slots = 40
+    unavailable = max_slots - min(stream.instructor_available_slots, max_slots)
+    score += unavailable * 5
+
+    # Subgroup handling
+    if stream.is_subgroup:
+        score += 30
+
+    # Critical pair (same instructor) is hardest
+    if stream.is_critical_pair:
+        score += 50
+
+    # Language subjects have many parallel streams
+    if stream.subject in STAGE3_LANGUAGE_SUBJECTS:
+        score += 15
+
+    # Instructor load (busy instructors are harder to schedule)
+    score += instructor_load * 3
+
+    # Groups with existing classes (more constrained)
+    score += existing_group_slots * 2
+
+    # More groups = more potential conflicts
+    score += len(stream.groups) * 5
+
+    return score
+
+
+def sort_stage3_by_complexity(
+    streams: list[Stage3PracticalStream],
+) -> list[Stage3PracticalStream]:
+    """Sort Stage 3 streams by complexity score (highest first).
+
+    Sorting order:
+    1. Critical subgroup pairs first (highest score)
+    2. Regular subgroups next
+    3. Non-subgroup streams last
+
+    Args:
+        streams: List of Stage3PracticalStream objects
 
     Returns:
         Sorted list with most complex (hardest to schedule) first

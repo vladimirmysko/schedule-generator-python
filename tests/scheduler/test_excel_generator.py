@@ -10,6 +10,7 @@ from form1_parser.scheduler.excel_generator import (
     DAYS_ORDER,
     GeneratorConfig,
     ScheduleExcelGenerator,
+    analyze_group_structure,
     generate_schedule_excel,
 )
 
@@ -147,40 +148,48 @@ class TestFilterAssignments:
     def test_filter_by_year_1(self):
         config = GeneratorConfig(language="kaz", year=1, week_type="both")
         generator = ScheduleExcelGenerator(config)
-        assignments, groups = generator.filter_assignments(SAMPLE_SCHEDULE_DATA)
+        assignments, base_groups, group_structure = generator.filter_assignments(
+            SAMPLE_SCHEDULE_DATA
+        )
 
         # Should include year 1 Kazakh groups (odd second digit)
-        assert "АРХ-11 О" in groups
-        assert "АРХ-13 О" in groups
+        assert "АРХ-11 О" in base_groups
+        assert "АРХ-13 О" in base_groups
         # Should exclude year 2
-        assert "АРХ-21 О" not in groups
+        assert "АРХ-21 О" not in base_groups
         # Should exclude Russian groups (even second digit)
-        assert "ЮР-12 О" not in groups
+        assert "ЮР-12 О" not in base_groups
 
     def test_filter_by_year_2(self):
         config = GeneratorConfig(language="kaz", year=2, week_type="odd")
         generator = ScheduleExcelGenerator(config)
-        assignments, groups = generator.filter_assignments(SAMPLE_SCHEDULE_DATA)
+        assignments, base_groups, group_structure = generator.filter_assignments(
+            SAMPLE_SCHEDULE_DATA
+        )
 
-        assert "АРХ-21 О" in groups
-        assert "АРХ-23 О" in groups
-        assert "АРХ-11 О" not in groups
+        assert "АРХ-21 О" in base_groups
+        assert "АРХ-23 О" in base_groups
+        assert "АРХ-11 О" not in base_groups
 
     def test_filter_russian_groups(self):
         config = GeneratorConfig(language="rus", year=1, week_type="even")
         generator = ScheduleExcelGenerator(config)
-        assignments, groups = generator.filter_assignments(SAMPLE_SCHEDULE_DATA)
+        assignments, base_groups, group_structure = generator.filter_assignments(
+            SAMPLE_SCHEDULE_DATA
+        )
 
         # Russian groups have even second digit (2, 4)
-        assert "ЮР-12 О" in groups
-        assert "ЮР-14 О" in groups
+        assert "ЮР-12 О" in base_groups
+        assert "ЮР-14 О" in base_groups
         # Kazakh groups (odd second digit) should be excluded
-        assert "АРХ-11 О" not in groups
+        assert "АРХ-11 О" not in base_groups
 
     def test_filter_by_week_type_odd(self):
         config = GeneratorConfig(language="kaz", year=2, week_type="odd")
         generator = ScheduleExcelGenerator(config)
-        assignments, groups = generator.filter_assignments(SAMPLE_SCHEDULE_DATA)
+        assignments, base_groups, group_structure = generator.filter_assignments(
+            SAMPLE_SCHEDULE_DATA
+        )
 
         # Should include odd and both week types
         assert len(assignments) > 0
@@ -188,7 +197,9 @@ class TestFilterAssignments:
     def test_filter_by_week_type_even(self):
         config = GeneratorConfig(language="rus", year=1, week_type="even")
         generator = ScheduleExcelGenerator(config)
-        assignments, groups = generator.filter_assignments(SAMPLE_SCHEDULE_DATA)
+        assignments, base_groups, group_structure = generator.filter_assignments(
+            SAMPLE_SCHEDULE_DATA
+        )
 
         # Should include even and both week types
         assert len(assignments) > 0
@@ -254,7 +265,8 @@ class TestBuildScheduleGrid:
         config = GeneratorConfig(language="kaz", year=1, week_type="both")
         generator = ScheduleExcelGenerator(config)
         groups = ["АРХ-11 О", "АРХ-13 О"]
-        grid = generator.build_schedule_grid(SAMPLE_ASSIGNMENTS, groups)
+        group_structure = analyze_group_structure(groups)
+        grid = generator.build_schedule_grid(SAMPLE_ASSIGNMENTS, groups, group_structure)
 
         # Check all days are present
         for day in DAYS_ORDER:
@@ -264,26 +276,29 @@ class TestBuildScheduleGrid:
         for slot in range(1, 8):
             assert slot in grid["monday"]
 
-        # Check groups are in each slot
+        # Check groups are in each slot (now with sub1/sub2 structure)
         for group in groups:
             assert group in grid["monday"][1]
+            assert "sub1" in grid["monday"][1][group]
+            assert "sub2" in grid["monday"][1][group]
 
     def test_grid_assignment_placement(self):
         config = GeneratorConfig(language="kaz", year=1, week_type="both")
         generator = ScheduleExcelGenerator(config)
         groups = ["АРХ-11 О", "АРХ-13 О"]
-        grid = generator.build_schedule_grid(SAMPLE_ASSIGNMENTS, groups)
+        group_structure = analyze_group_structure(groups)
+        grid = generator.build_schedule_grid(SAMPLE_ASSIGNMENTS, groups, group_structure)
 
-        # Check that test_stream_1 is placed in monday slot 1
-        assert grid["monday"][1]["АРХ-11 О"] is not None
-        assert grid["monday"][1]["АРХ-13 О"] is not None
-        assert grid["monday"][1]["АРХ-11 О"]["subject"] == "Test Subject 1"
+        # Check that test_stream_1 is placed in monday slot 1 (in sub1)
+        assert grid["monday"][1]["АРХ-11 О"]["sub1"] is not None
+        assert grid["monday"][1]["АРХ-13 О"]["sub1"] is not None
+        assert grid["monday"][1]["АРХ-11 О"]["sub1"]["subject"] == "Test Subject 1"
 
 
 class TestFormatCellContent:
     """Tests for cell content formatting."""
 
-    def test_format_basic(self):
+    def test_format_single_assignment(self):
         config = GeneratorConfig(language="kaz", year=1, week_type="both")
         generator = ScheduleExcelGenerator(config)
         assignment = {
@@ -291,8 +306,10 @@ class TestFormatCellContent:
             "instructor": "Test Instructor",
             "room": "A-101",
             "room_address": "Test Address",
+            "stream_type": "lecture",
         }
-        content = generator.format_cell_content(assignment)
+        # Single group (no subgroups)
+        content = generator.format_cell_content(assignment, None, False)
 
         assert "TEST SUBJECT" in content
         assert "Test Instructor" in content
@@ -306,8 +323,9 @@ class TestFormatCellContent:
             "instructor": "а.о.Instructor Name",
             "room": "A-101",
             "room_address": "Address",
+            "stream_type": "lecture",
         }
-        content = generator.format_cell_content(assignment)
+        content = generator.format_cell_content(assignment, None, False)
 
         assert "а.о." not in content
         assert "Instructor Name" in content
@@ -320,11 +338,90 @@ class TestFormatCellContent:
             "instructor": "қ.проф.Professor Name",
             "room": "A-101",
             "room_address": "Address",
+            "stream_type": "lecture",
         }
-        content = generator.format_cell_content(assignment)
+        content = generator.format_cell_content(assignment, None, False)
 
         assert "қ.проф." not in content
         assert "Professor Name" in content
+
+    def test_format_side_by_side_both_subgroups(self):
+        config = GeneratorConfig(language="kaz", year=1, week_type="both")
+        generator = ScheduleExcelGenerator(config)
+        sub1_assignment = {
+            "stream_id": "stream1",
+            "subject": "Subject 1",
+            "instructor": "Instructor 1",
+            "room": "A-101",
+            "room_address": "Address 1",
+            "stream_type": "practical",
+        }
+        sub2_assignment = {
+            "stream_id": "stream2",
+            "subject": "Subject 2",
+            "instructor": "Instructor 2",
+            "room": "B-202",
+            "room_address": "Address 2",
+            "stream_type": "practical",
+        }
+        content = generator.format_cell_content(sub1_assignment, sub2_assignment, True)
+
+        # Should have separator
+        assert "-" in content
+        assert "Subject 1" in content
+        assert "Subject 2" in content
+
+    def test_format_side_by_side_same_class(self):
+        config = GeneratorConfig(language="kaz", year=1, week_type="both")
+        generator = ScheduleExcelGenerator(config)
+        assignment = {
+            "stream_id": "same_stream",
+            "subject": "Same Subject",
+            "instructor": "Same Instructor",
+            "room": "A-101",
+            "room_address": "Address",
+            "stream_type": "practical",
+        }
+        # Both subgroups have same class (same stream_id)
+        content = generator.format_cell_content(assignment, assignment, True)
+
+        # Should show single content (no split)
+        assert " - " not in content
+        assert "Same Subject" in content
+
+    def test_format_only_sub1_no_separator(self):
+        config = GeneratorConfig(language="kaz", year=1, week_type="both")
+        generator = ScheduleExcelGenerator(config)
+        sub1_assignment = {
+            "stream_id": "stream1",
+            "subject": "Subject 1",
+            "instructor": "Instructor 1",
+            "room": "A-101",
+            "room_address": "Address",
+            "stream_type": "practical",
+        }
+        content = generator.format_cell_content(sub1_assignment, None, True)
+
+        # Whole group lesson - no separator
+        assert "\n-\n" not in content
+        assert "Subject 1" in content
+
+    def test_format_only_sub2_no_separator(self):
+        config = GeneratorConfig(language="kaz", year=1, week_type="both")
+        generator = ScheduleExcelGenerator(config)
+        sub2_assignment = {
+            "stream_id": "stream2",
+            "subject": "Subject 2",
+            "instructor": "Instructor 2",
+            "room": "B-202",
+            "room_address": "Address",
+            "stream_type": "practical",
+        }
+        content = generator.format_cell_content(None, sub2_assignment, True)
+
+        # Whole group lesson - no separator
+        assert "\n-\n" not in content
+        assert "Subject 2" in content
 
 
 class TestCreateWorkbook:
@@ -333,8 +430,10 @@ class TestCreateWorkbook:
     def test_creates_workbook(self):
         config = GeneratorConfig(language="kaz", year=1, week_type="both")
         generator = ScheduleExcelGenerator(config)
-        assignments, groups = generator.filter_assignments(SAMPLE_SCHEDULE_DATA)
-        wb = generator.create_workbook(assignments, groups)
+        assignments, base_groups, group_structure = generator.filter_assignments(
+            SAMPLE_SCHEDULE_DATA
+        )
+        wb = generator.create_workbook(assignments, base_groups, group_structure)
 
         assert wb is not None
         assert len(wb.worksheets) > 0
@@ -342,7 +441,7 @@ class TestCreateWorkbook:
     def test_empty_groups_creates_empty_sheet(self):
         config = GeneratorConfig(language="kaz", year=1, week_type="both")
         generator = ScheduleExcelGenerator(config)
-        wb = generator.create_workbook([], [])
+        wb = generator.create_workbook([], [], {})
 
         assert wb is not None
         assert len(wb.worksheets) == 1
@@ -430,8 +529,10 @@ class TestSheetLayout:
     def test_sheet_has_correct_structure(self):
         config = GeneratorConfig(language="kaz", year=1, week_type="both")
         generator = ScheduleExcelGenerator(config)
-        assignments, groups = generator.filter_assignments(SAMPLE_SCHEDULE_DATA)
-        wb = generator.create_workbook(assignments, groups)
+        assignments, base_groups, group_structure = generator.filter_assignments(
+            SAMPLE_SCHEDULE_DATA
+        )
+        wb = generator.create_workbook(assignments, base_groups, group_structure)
 
         ws = wb.worksheets[0]
 
@@ -453,8 +554,10 @@ class TestSheetLayout:
     def test_sheet_has_day_names(self):
         config = GeneratorConfig(language="kaz", year=1, week_type="both")
         generator = ScheduleExcelGenerator(config)
-        assignments, groups = generator.filter_assignments(SAMPLE_SCHEDULE_DATA)
-        wb = generator.create_workbook(assignments, groups)
+        assignments, base_groups, group_structure = generator.filter_assignments(
+            SAMPLE_SCHEDULE_DATA
+        )
+        wb = generator.create_workbook(assignments, base_groups, group_structure)
 
         ws = wb.worksheets[0]
 
@@ -477,3 +580,148 @@ class TestSheetLayout:
             strings["days"]["friday"],
         ]
         assert day_names_found == expected_days
+
+
+class TestAnalyzeGroupStructure:
+    """Tests for group structure analysis."""
+
+    def test_no_subgroups(self):
+        groups = ["АРХ-11 О", "АРХ-13 О"]
+        structure = analyze_group_structure(groups)
+
+        assert len(structure) == 2
+        assert "АРХ-11 О" in structure
+        assert "АРХ-13 О" in structure
+        assert structure["АРХ-11 О"]["has_subgroups"] is False
+        assert structure["АРХ-13 О"]["has_subgroups"] is False
+        assert structure["АРХ-11 О"]["subgroup_1"] == "АРХ-11 О"
+        assert structure["АРХ-11 О"]["subgroup_2"] is None
+
+    def test_with_subgroups(self):
+        groups = ["СТР-11 О /1/", "СТР-11 О /2/", "АРХ-11 О"]
+        structure = analyze_group_structure(groups)
+
+        assert len(structure) == 2  # Base groups: СТР-11 О, АРХ-11 О
+        assert "СТР-11 О" in structure
+        assert "АРХ-11 О" in structure
+        assert structure["СТР-11 О"]["has_subgroups"] is True
+        assert structure["СТР-11 О"]["subgroup_1"] == "СТР-11 О /1/"
+        assert structure["СТР-11 О"]["subgroup_2"] == "СТР-11 О /2/"
+        assert structure["АРХ-11 О"]["has_subgroups"] is False
+
+    def test_only_subgroup_1(self):
+        groups = ["СТР-11 О /1/"]
+        structure = analyze_group_structure(groups)
+
+        assert len(structure) == 1
+        assert "СТР-11 О" in structure
+        assert structure["СТР-11 О"]["has_subgroups"] is True
+        assert structure["СТР-11 О"]["subgroup_1"] == "СТР-11 О /1/"
+        assert structure["СТР-11 О"]["subgroup_2"] is None
+
+    def test_only_subgroup_2(self):
+        groups = ["СТР-11 О /2/"]
+        structure = analyze_group_structure(groups)
+
+        assert len(structure) == 1
+        assert "СТР-11 О" in structure
+        assert structure["СТР-11 О"]["has_subgroups"] is True
+        assert structure["СТР-11 О"]["subgroup_1"] is None
+        assert structure["СТР-11 О"]["subgroup_2"] == "СТР-11 О /2/"
+
+    def test_mixed_groups(self):
+        groups = ["АРХ-11 О", "СТР-11 О /1/", "СТР-11 О /2/", "ЮР-11 О"]
+        structure = analyze_group_structure(groups)
+
+        assert len(structure) == 3
+        assert structure["АРХ-11 О"]["has_subgroups"] is False
+        assert structure["СТР-11 О"]["has_subgroups"] is True
+        assert structure["ЮР-11 О"]["has_subgroups"] is False
+
+
+class TestSubgroupDisplay:
+    """Tests for subgroup display in Excel."""
+
+    def test_subgroups_combined_in_filter(self):
+        """Test that filter_assignments returns base groups, not subgroup variants."""
+        # Create sample data with subgroups
+        subgroup_data = {
+            "assignments": [
+                {
+                    "stream_id": "stream1",
+                    "subject": "Шетел тілі",
+                    "instructor": "Instructor 1",
+                    "groups": ["СТР-11 О /1/"],
+                    "day": "monday",
+                    "slot": 1,
+                    "time": "09:00-09:50",
+                    "room": "A-101",
+                    "room_address": "Address",
+                    "week_type": "both",
+                },
+                {
+                    "stream_id": "stream2",
+                    "subject": "Орыс тілі",
+                    "instructor": "Instructor 2",
+                    "groups": ["СТР-11 О /2/"],
+                    "day": "monday",
+                    "slot": 1,
+                    "time": "09:00-09:50",
+                    "room": "B-202",
+                    "room_address": "Address",
+                    "week_type": "both",
+                },
+            ]
+        }
+
+        config = GeneratorConfig(language="kaz", year=1, week_type="both")
+        generator = ScheduleExcelGenerator(config)
+        assignments, base_groups, group_structure = generator.filter_assignments(
+            subgroup_data
+        )
+
+        # Should have 1 base group (СТР-11 О), not 2 subgroup variants
+        assert len(base_groups) == 1
+        assert "СТР-11 О" in base_groups
+        assert "СТР-11 О /1/" not in base_groups
+        assert "СТР-11 О /2/" not in base_groups
+
+        # group_structure should indicate subgroups
+        assert group_structure["СТР-11 О"]["has_subgroups"] is True
+
+    def test_merge_vertically_helper(self):
+        """Test the _merge_vertically helper method."""
+        config = GeneratorConfig(language="kaz", year=1, week_type="both")
+        generator = ScheduleExcelGenerator(config)
+
+        result = generator._merge_vertically("Top\nLine2", "Bottom\nLine2")
+        lines = result.split("\n")
+        assert len(lines) == 5  # Top(2) + separator(1) + Bottom(2)
+        assert "Top" == lines[0]
+        assert "Line2" == lines[1]
+        assert "-" == lines[2]
+        assert "Bottom" == lines[3]
+        assert "Line2" == lines[4]
+
+    def test_merge_vertically_empty_top(self):
+        """Test vertical merge with empty top side."""
+        config = GeneratorConfig(language="kaz", year=1, week_type="both")
+        generator = ScheduleExcelGenerator(config)
+
+        result = generator._merge_vertically("", "Bottom\nLine2\nLine3")
+        lines = result.split("\n")
+        assert len(lines) == 4  # separator(1) + Bottom(3)
+        assert "-" == lines[0]
+        assert "Bottom" == lines[1]
+
+    def test_merge_vertically_empty_bottom(self):
+        """Test vertical merge with empty bottom side."""
+        config = GeneratorConfig(language="kaz", year=1, week_type="both")
+        generator = ScheduleExcelGenerator(config)
+
+        result = generator._merge_vertically("Top\nLine2", "")
+        lines = result.split("\n")
+        assert len(lines) == 3  # Top(2) + separator(1)
+        assert "Top" == lines[0]
+        assert "Line2" == lines[1]
+        assert "-" == lines[2]
