@@ -622,6 +622,9 @@ class ConflictTracker:
         The 2-hour rule: No more than 2 hours per subject per day per group (normal).
         Extreme case: 3 hours allowed only when no other option exists.
 
+        PE (flexible subjects) are exempt from daily limit - they have practical
+        sessions of 3 hours and lectures may be on different days.
+
         Args:
             groups: List of group names
             day: Day of the week
@@ -633,6 +636,12 @@ class ConflictTracker:
             - can_add_normal: True if ≤ 2 hours total
             - can_add_extreme: True if ≤ 3 hours total (extreme case)
         """
+        from .constants import FLEXIBLE_SCHEDULE_SUBJECTS
+
+        # PE exempt from daily limit - always allow
+        if subject in FLEXIBLE_SCHEDULE_SUBJECTS:
+            return (True, True)
+
         for group in groups:
             current = self.group_subject_daily_hours[(group, day, subject)]
             total = current + hours_to_add

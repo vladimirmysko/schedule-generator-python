@@ -8,6 +8,7 @@ from .algorithm import (
 )
 from .conflicts import ConflictTracker
 from .constants import (
+    FIRST_SHIFT_EXTENDED_SLOTS,
     FIRST_SHIFT_SLOTS,
     SECOND_SHIFT_SLOTS,
     STAGE1_DAYS,
@@ -70,6 +71,7 @@ __all__ = [
     "STAGE1_DAYS",
     "STAGE1_MIN_GROUPS",
     "FIRST_SHIFT_SLOTS",
+    "FIRST_SHIFT_EXTENDED_SLOTS",
     "SECOND_SHIFT_SLOTS",
     "YEAR_SHIFT_MAP",
     "get_slot_info",

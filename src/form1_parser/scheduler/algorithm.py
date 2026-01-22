@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .conflicts import ConflictTracker
-from .constants import FLEXIBLE_SCHEDULE_SUBJECTS, get_slots_for_shift
+from .constants import FLEXIBLE_SCHEDULE_SUBJECTS, Shift, get_slots_for_shift
 from .models import (
     Assignment,
     Day,
@@ -643,10 +643,15 @@ class Stage2Scheduler:
         for stream in practicals:
             stream.viable_positions = self._count_viable_positions(stream)
 
-        # Sort by: viable_positions (ascending), then complexity_score (descending)
+        # Sort by: PE first, then viable_positions (asc), then complexity (desc)
+        # PE needs to be scheduled first to ensure different-day rule is satisfied
         sorted_practicals = sorted(
             practicals,
-            key=lambda s: (s.viable_positions, -s.complexity_score),
+            key=lambda s: (
+                0 if s.subject in FLEXIBLE_SCHEDULE_SUBJECTS else 1,
+                s.viable_positions,
+                -s.complexity_score,
+            ),
         )
 
         # 5. Schedule each practical
@@ -931,9 +936,10 @@ class Stage2Scheduler:
         # PHASE 1: Try different days (preferred)
         different_days = self._get_days_after(lecture_day)
 
-        # For flexible subjects, all weekdays are available
+        # For flexible subjects (PE), all weekdays EXCEPT lecture day are available
+        # PE practicals MUST be on a different day than lecture
         if is_flexible:
-            different_days = self.WEEKDAYS.copy()
+            different_days = [d for d in self.WEEKDAYS if d != lecture_day]
 
         # Sort days by group daily load (prefer least loaded)
         day_loads = {
@@ -968,24 +974,58 @@ class Stage2Scheduler:
                 last_details = details
 
         # PHASE 2: Try same day after lecture (extreme case)
-        same_day_slots = [s for s in valid_slots if s > lecture_end_slot]
+        # Skip for PE - lecture and practical MUST be on different days
+        if not is_flexible:
+            same_day_slots = [s for s in valid_slots if s > lecture_end_slot]
 
-        for slot in same_day_slots:
-            if hours > 1:
-                consecutive_valid = all((slot + i) in valid_slots for i in range(hours))
-                if not consecutive_valid:
-                    continue
+            for slot in same_day_slots:
+                if hours > 1:
+                    consecutive_valid = all(
+                        (slot + i) in valid_slots for i in range(hours)
+                    )
+                    if not consecutive_valid:
+                        continue
 
-            positions_tried += 1
-            passed, reason, details = self._passes_all_checks(
-                stream, lecture_day, slot, hours, extreme=True
-            )
+                positions_tried += 1
+                passed, reason, details = self._passes_all_checks(
+                    stream, lecture_day, slot, hours, extreme=True
+                )
 
-            if passed:
-                return (lecture_day, slot, True)
+                if passed:
+                    return (lecture_day, slot, True)
 
-            last_reason = reason
-            last_details = details
+                last_reason = reason
+                last_details = details
+
+        # PHASE 3: Try extended first-shift slots (6-7) for first-shift streams
+        # Per CONSTRAINTS.md section 6.3 "Shift Boundary Flexibility":
+        # First shift can extend to slots 6-7 (14:00-15:50) when standard slots insufficient
+        if stream.shift == Shift.FIRST:
+            extended_slots = get_slots_for_shift(Shift.FIRST, extended=True)
+            # Only try the extended slots (6-7) that weren't tried in PHASE 1
+            overflow_slots = [s for s in extended_slots if s not in valid_slots]
+
+            for day in sorted_days:
+                for slot in overflow_slots:
+                    if hours > 1:
+                        consecutive_valid = all(
+                            (slot + i) in extended_slots for i in range(hours)
+                        )
+                        if not consecutive_valid:
+                            continue
+
+                    positions_tried += 1
+                    use_extreme = is_flexible and hours >= 3
+
+                    passed, reason, details = self._passes_all_checks(
+                        stream, day, slot, hours, extreme=use_extreme
+                    )
+
+                    if passed:
+                        return (day, slot, False)
+
+                    last_reason = reason
+                    last_details = details
 
         # No position found
         if positions_tried == 0:
@@ -1044,21 +1084,31 @@ class Stage2Scheduler:
         valid_slots = get_slots_for_shift(stream.shift)
         is_flexible = stream.subject in FLEXIBLE_SCHEDULE_SUBJECTS
 
-        # For flexible subjects, check all weekdays
-        days_to_check = (
-            self.WEEKDAYS
-            if is_flexible
-            else self._get_days_after(stream.lecture_dependency.day)
-        )
+        # For first-shift streams, also consider extended slots (6-7)
+        # Per CONSTRAINTS.md section 6.3 "Shift Boundary Flexibility"
+        if stream.shift == Shift.FIRST:
+            extended_slots = get_slots_for_shift(Shift.FIRST, extended=True)
+        else:
+            extended_slots = valid_slots
+
+        # For flexible subjects (PE), check all weekdays EXCEPT lecture day
+        # PE practicals MUST be on a different day than lecture
+        if is_flexible:
+            days_to_check = [
+                d for d in self.WEEKDAYS if d != stream.lecture_dependency.day
+            ]
+        else:
+            days_to_check = self._get_days_after(stream.lecture_dependency.day)
 
         viable_count = 0
         use_extreme = is_flexible and hours >= 3
 
         for day in days_to_check:
-            for slot in valid_slots:
+            # Check both standard and extended slots for first shift
+            for slot in extended_slots:
                 # Check if consecutive slots fit
                 if hours > 1:
-                    if not all((slot + i) in valid_slots for i in range(hours)):
+                    if not all((slot + i) in extended_slots for i in range(hours)):
                         continue
 
                 # Check all constraints (without reserving)
@@ -1138,17 +1188,19 @@ class Stage2Scheduler:
                 )
 
             # 3b. Max windows: would this create a 2nd window?
-            would_create, window_group = (
-                self.conflict_tracker.would_create_second_window(
-                    stream.groups, day, current_slot
+            # PE exempt - Sports Hall is in a different location, gaps are acceptable
+            if stream.subject not in FLEXIBLE_SCHEDULE_SUBJECTS:
+                would_create, window_group = (
+                    self.conflict_tracker.would_create_second_window(
+                        stream.groups, day, current_slot
+                    )
                 )
-            )
-            if would_create:
-                return (
-                    False,
-                    UnscheduledReason.MAX_WINDOWS_EXCEEDED,
-                    f"Group '{window_group}' would have more than 1 window on {day.value}",
-                )
+                if would_create:
+                    return (
+                        False,
+                        UnscheduledReason.MAX_WINDOWS_EXCEEDED,
+                        f"Group '{window_group}' would have more than 1 window on {day.value}",
+                    )
 
             # 3c. Standard availability (instructor, groups)
             (

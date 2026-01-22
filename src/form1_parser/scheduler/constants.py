@@ -45,6 +45,10 @@ STAGE1_MIN_GROUPS = 2
 FIRST_SHIFT_SLOTS = [1, 2, 3, 4, 5]
 SECOND_SHIFT_SLOTS = [6, 7, 8, 9, 10, 11, 12, 13]
 
+# Extended first shift slots (slots 6-7 can be used when standard slots are insufficient)
+# Per CONSTRAINTS.md section 6.3: "Shift Boundary Flexibility"
+FIRST_SHIFT_EXTENDED_SLOTS = [1, 2, 3, 4, 5, 6, 7]
+
 # Year to shift mapping
 # 1st year: First shift (mandatory)
 # 2nd year: Second shift (mandatory)
@@ -75,10 +79,19 @@ def get_slot_time_range(slot_number: int) -> str:
     return ""
 
 
-def get_slots_for_shift(shift: Shift) -> list[int]:
-    """Get slot numbers for a shift."""
+def get_slots_for_shift(shift: Shift, extended: bool = False) -> list[int]:
+    """Get slot numbers for a shift.
+
+    Args:
+        shift: The shift type (FIRST or SECOND)
+        extended: If True and shift is FIRST, returns extended slots (1-7)
+                  per CONSTRAINTS.md section 6.3 "Shift Boundary Flexibility"
+
+    Returns:
+        List of valid slot numbers for the shift
+    """
     if shift == Shift.FIRST:
-        return FIRST_SHIFT_SLOTS
+        return FIRST_SHIFT_EXTENDED_SLOTS if extended else FIRST_SHIFT_SLOTS
     return SECOND_SHIFT_SLOTS
 
 
