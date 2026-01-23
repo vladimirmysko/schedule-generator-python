@@ -1,5 +1,6 @@
 """CLI entry point for Form-1 parser."""
 
+import json
 from enum import Enum
 from pathlib import Path
 from typing import Annotated, Optional
@@ -10,6 +11,7 @@ from rich.table import Table
 
 from .exporters import get_exporter
 from .parser import Form1Parser
+from .scheduler import ORToolsScheduler, WeekType
 
 app = typer.Typer(
     name="form1-parser",
@@ -236,6 +238,165 @@ def _show_detailed_results(result) -> None:
             subjects_table.add_row("...", "...", "...", "...", "...", "...")
 
         console.print(subjects_table)
+
+
+@app.command()
+def schedule(
+    input_file: Annotated[
+        Path,
+        typer.Argument(
+            help="Path to parsed result JSON file", exists=True, readable=True
+        ),
+    ],
+    output: Annotated[
+        Optional[Path],
+        typer.Option("-o", "--output", help="Output JSON file path"),
+    ] = None,
+    time_limit: Annotated[
+        int,
+        typer.Option("--time-limit", "-t", help="Solver time limit in seconds"),
+    ] = 300,
+    config_dir: Annotated[
+        Optional[Path],
+        typer.Option("--config", "-c", help="Configuration directory"),
+    ] = None,
+    week_type: Annotated[
+        str,
+        typer.Option("--week", "-w", help="Week type: odd, even, or both"),
+    ] = "both",
+    verbose: Annotated[
+        bool,
+        typer.Option("-v", "--verbose", help="Show detailed output"),
+    ] = False,
+) -> None:
+    """Generate schedule from parsed Form-1 data using CP-SAT solver."""
+    # Load input data
+    with console.status("[bold green]Loading parsed data..."):
+        with open(input_file, encoding="utf-8") as f:
+            data = json.load(f)
+
+    # Extract streams from subjects
+    streams = []
+    for subject in data.get("subjects", []):
+        streams.extend(subject.get("lecture_streams", []))
+        streams.extend(subject.get("practical_streams", []))
+        streams.extend(subject.get("lab_streams", []))
+
+    console.print(f"\n[bold]Scheduling from:[/bold] {input_file.name}")
+    console.print(f"  Total streams loaded: {len(streams)}")
+
+    # Parse week type
+    week_type_enum = WeekType(week_type.lower())
+
+    # Determine config directory
+    if config_dir is None:
+        config_dir = Path("reference")
+
+    # Create scheduler
+    scheduler = ORToolsScheduler(config_dir, time_limit)
+
+    # Run scheduling
+    with console.status(f"[bold green]Scheduling (time limit: {time_limit}s)..."):
+        result = scheduler.schedule(streams, week_type=week_type_enum)
+
+    # Show results
+    console.print("\n[bold]Scheduling Results:[/bold]")
+
+    stats = result.statistics
+    rate = stats.total_assigned / stats.total_streams * 100 if stats.total_streams > 0 else 0
+
+    results_table = Table(show_header=False)
+    results_table.add_column("Metric", style="cyan")
+    results_table.add_column("Value", style="green")
+
+    results_table.add_row("Total Streams", str(stats.total_streams))
+    results_table.add_row("Scheduled", str(stats.total_assigned))
+    results_table.add_row("Unscheduled", str(stats.total_unscheduled))
+    results_table.add_row("Success Rate", f"{rate:.1f}%")
+    results_table.add_row("Solver Time", f"{stats.solver_time_seconds:.2f}s")
+
+    console.print(results_table)
+
+    # Show by day distribution
+    if stats.by_day:
+        day_table = Table(title="Assignments by Day")
+        day_table.add_column("Day", style="cyan")
+        day_table.add_column("Count", style="green")
+
+        for day, count in sorted(stats.by_day.items()):
+            day_table.add_row(day.capitalize(), str(count))
+
+        console.print(day_table)
+
+    # Show unscheduled reasons if verbose
+    if verbose and result.unscheduled_streams:
+        console.print(f"\n[bold yellow]Unscheduled Streams ({len(result.unscheduled_streams)}):[/bold yellow]")
+
+        # Group by reason
+        by_reason: dict[str, int] = {}
+        for us in result.unscheduled_streams:
+            reason = us.reason.value
+            by_reason[reason] = by_reason.get(reason, 0) + 1
+
+        for reason, count in sorted(by_reason.items(), key=lambda x: -x[1]):
+            console.print(f"  {reason}: {count}")
+
+    # Export if output path provided
+    if output:
+        if not output.suffix:
+            output = output.with_suffix(".json")
+
+        output.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(output, "w", encoding="utf-8") as f:
+            json.dump(result.to_dict(), f, ensure_ascii=False, indent=2)
+
+        console.print(f"\n[bold green]✓[/bold green] Schedule saved to: {output}")
+
+
+@app.command(name="generate-excel")
+def generate_excel(
+    input_file: Annotated[
+        Path,
+        typer.Argument(
+            help="Path to schedule JSON file", exists=True, readable=True
+        ),
+    ],
+    output_dir: Annotated[
+        Optional[Path],
+        typer.Option("-o", "--output", help="Output directory for Excel files"),
+    ] = None,
+) -> None:
+    """Generate Excel schedule files from schedule JSON."""
+    # Load schedule data
+    with console.status("[bold green]Loading schedule data..."):
+        with open(input_file, encoding="utf-8") as f:
+            data = json.load(f)
+
+    assignments = data.get("assignments", [])
+    console.print(f"\n[bold]Generating Excel from:[/bold] {input_file.name}")
+    console.print(f"  Total assignments: {len(assignments)}")
+
+    if output_dir is None:
+        output_dir = Path("output/excel")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate Excel files
+    from .scheduler.excel_generator import generate_schedule_excel
+
+    with console.status("[bold green]Generating Excel files..."):
+        generated_files = generate_schedule_excel(
+            input_path=input_file,
+            output_dir=output_dir,
+        )
+
+    console.print(f"\n[bold green]✓[/bold green] Generated {len(generated_files)} Excel files:")
+    for file_path in generated_files[:10]:
+        console.print(f"  {file_path.name}")
+
+    if len(generated_files) > 10:
+        console.print(f"  ... and {len(generated_files) - 10} more")
 
 
 if __name__ == "__main__":
