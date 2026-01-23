@@ -76,7 +76,7 @@ uv run form1-parser stats <INPUT_FILE>
 uv run form1-parser stats data/form-1.xlsx
 ```
 
-### Schedule
+### Schedule (Stage 1)
 
 Generate Stage 1 schedule for multi-group lectures. This command takes the parsed JSON output and creates a schedule assigning lectures to Monday, Tuesday, and Wednesday.
 
@@ -93,6 +93,8 @@ uv run form1-parser schedule <INPUT_FILE> [OPTIONS]
 - `--subject-rooms PATH` - Path to subject-rooms.json file (default: data/reference/subject-rooms.json)
 - `--instructor-rooms PATH` - Path to instructor-rooms.json file (default: data/reference/instructor-rooms.json)
 - `--group-buildings PATH` - Path to group-buildings.json file (default: data/reference/group-buildings.json)
+- `--instructor-availability PATH` - Path to instructor-availability.json file (default: data/reference/instructor-availability.json)
+- `--nearby-buildings PATH` - Path to nearby-buildings.json file (default: data/reference/nearby-buildings.json)
 - `-v, --verbose` - Show detailed output including room utilization and unscheduled streams
 
 **Examples:**
@@ -117,6 +119,115 @@ uv run form1-parser schedule output/result.json --rooms custom/rooms.csv
 - Assigns to Monday, Tuesday, Wednesday only
 - Distributes evenly across days
 - Assigns rooms based on priority: subject rooms → instructor rooms → group buildings → general pool
+
+### Schedule Stage 2
+
+Generate Stage 2 schedule for multi-group practicals. Takes the parsed JSON and Stage 1 output, then schedules practical sessions that have corresponding lectures already scheduled.
+
+```bash
+uv run form1-parser schedule-stage2 <PARSED_FILE> <STAGE1_FILE> [OPTIONS]
+```
+
+**Arguments:**
+- `PARSED_FILE` - Parsed JSON file from `form1-parser parse` command (required)
+- `STAGE1_FILE` - Stage 1 schedule JSON file from `form1-parser schedule` command (required)
+
+**Options:**
+- `-o, --output PATH` - Output JSON file path (default: output/schedule-s2.json)
+- `--rooms PATH` - Path to rooms.csv file (default: data/reference/rooms.csv)
+- `--subject-rooms PATH` - Path to subject-rooms.json file (default: data/reference/subject-rooms.json)
+- `--instructor-rooms PATH` - Path to instructor-rooms.json file (default: data/reference/instructor-rooms.json)
+- `--group-buildings PATH` - Path to group-buildings.json file (default: data/reference/group-buildings.json)
+- `--instructor-availability PATH` - Path to instructor-availability.json file (default: data/reference/instructor-availability.json)
+- `--nearby-buildings PATH` - Path to nearby-buildings.json file (default: data/reference/nearby-buildings.json)
+- `--instructor-days PATH` - Path to instructor-days.json file (default: data/reference/instructor-days.json)
+- `--groups-second-shift PATH` - Path to groups-second-shift.csv file (default: data/reference/groups-second-shift.csv)
+- `-v, --verbose` - Show detailed output
+
+**Examples:**
+
+```bash
+# Generate Stage 2 schedule with default settings
+uv run form1-parser schedule-stage2 output/result.json output/schedule.json
+
+# Generate Stage 2 schedule with custom output path
+uv run form1-parser schedule-stage2 output/result.json output/schedule.json -o output/schedule-s2.json
+
+# Generate Stage 2 schedule with verbose output
+uv run form1-parser schedule-stage2 output/result.json output/schedule.json -v
+```
+
+**Stage 2 Algorithm:**
+- Carries over all Stage 1 lecture assignments
+- Filters practicals with 2+ groups that have corresponding lectures scheduled
+- Respects instructor availability and preferred days
+- Handles second shift groups based on groups-second-shift.csv
+- Prevents instructor/group/room conflicts
+
+### Schedule Stage 3
+
+Generate Stage 3 schedule for practical-only streams (streams without lecture dependencies). Takes the parsed JSON and Stage 2 output, then schedules remaining practical sessions including subgroup handling.
+
+```bash
+uv run form1-parser schedule-stage3 <PARSED_FILE> <STAGE2_FILE> [OPTIONS]
+```
+
+**Arguments:**
+- `PARSED_FILE` - Parsed JSON file from `form1-parser parse` command (required)
+- `STAGE2_FILE` - Stage 2 schedule JSON file from `form1-parser schedule-stage2` command (required)
+
+**Options:**
+- `-o, --output PATH` - Output JSON file path (default: output/schedule-s3.json)
+- `--rooms PATH` - Path to rooms.csv file (default: data/reference/rooms.csv)
+- `--subject-rooms PATH` - Path to subject-rooms.json file (default: data/reference/subject-rooms.json)
+- `--instructor-rooms PATH` - Path to instructor-rooms.json file (default: data/reference/instructor-rooms.json)
+- `--group-buildings PATH` - Path to group-buildings.json file (default: data/reference/group-buildings.json)
+- `--instructor-availability PATH` - Path to instructor-availability.json file (default: data/reference/instructor-availability.json)
+- `--nearby-buildings PATH` - Path to nearby-buildings.json file (default: data/reference/nearby-buildings.json)
+- `--instructor-days PATH` - Path to instructor-days.json file (default: data/reference/instructor-days.json)
+- `--groups-second-shift PATH` - Path to groups-second-shift.csv file (default: data/reference/groups-second-shift.csv)
+- `-v, --verbose` - Show detailed output
+
+**Examples:**
+
+```bash
+# Generate Stage 3 schedule with default settings
+uv run form1-parser schedule-stage3 output/result.json output/schedule-s2.json
+
+# Generate Stage 3 schedule with custom output path
+uv run form1-parser schedule-stage3 output/result.json output/schedule-s2.json -o output/schedule-s3.json
+
+# Generate Stage 3 schedule with verbose output
+uv run form1-parser schedule-stage3 output/result.json output/schedule-s2.json -v
+```
+
+**Stage 3 Algorithm:**
+- Carries over all Stage 2 assignments (lectures + practicals)
+- Schedules practical streams that don't have lecture dependencies
+- Handles subgroup scheduling for labs and practicals
+- Processes unscheduled streams from Stage 2
+- Prevents instructor/group/room conflicts
+
+### Full Scheduling Pipeline
+
+To generate a complete schedule, run all three stages in sequence:
+
+```bash
+# Step 1: Parse Form-1 Excel file
+uv run form1-parser parse data/form-1.xlsx -o output/result.json
+
+# Step 2: Stage 1 - Schedule multi-group lectures (Mon-Wed)
+uv run form1-parser schedule output/result.json -o output/schedule.json
+
+# Step 3: Stage 2 - Schedule multi-group practicals
+uv run form1-parser schedule-stage2 output/result.json output/schedule.json -o output/schedule-s2.json
+
+# Step 4: Stage 3 - Schedule remaining practicals and subgroups
+uv run form1-parser schedule-stage3 output/result.json output/schedule-s2.json -o output/schedule-s3.json
+
+# Step 5: Generate Excel files from final schedule
+uv run form1-parser generate-excel output/schedule-s3.json -o output/excel/
+```
 
 ### Generate Excel
 
