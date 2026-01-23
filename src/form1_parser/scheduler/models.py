@@ -195,6 +195,43 @@ class Stage4LectureStream:
 
 
 @dataclass
+class Stage5PracticalStream:
+    """Prepared practical stream for Stage 5 scheduling (single-group with lectures).
+
+    Stage 5 handles practical streams with exactly 1 group that have
+    a corresponding lecture scheduled in previous stages.
+    """
+
+    id: str
+    subject: str
+    instructor: str
+    language: str
+    groups: list[str]  # Always single-element
+    base_groups: list[str]  # Without subgroup suffix
+    subgroup_numbers: list[int | None]  # Subgroup numbers if present (1, 2, or None)
+    student_count: int
+    hours_odd_week: int
+    hours_even_week: int
+    shift: Shift
+    sheet: str
+    stream_type: str  # "practical"
+    is_subgroup: bool
+    is_critical_pair: bool = False  # Same instructor teaches both subgroups
+    has_lecture_dependency: bool = False
+    lecture_days: list[Day] = field(default_factory=list)
+    complexity_score: float = 0.0
+    viable_positions: int = 0
+    paired_stream_id: str | None = None  # For subgroup pairing
+    instructor_available_slots: int = 0
+    group_available_slots: int = 0
+
+    @property
+    def max_hours(self) -> int:
+        """Maximum hours needed per week."""
+        return max(self.hours_odd_week, self.hours_even_week)
+
+
+@dataclass
 class Room:
     """A room for scheduling."""
 
@@ -275,6 +312,15 @@ class ScheduleStatistics:
     by_day: dict[str, int] = field(default_factory=dict)
     by_shift: dict[str, int] = field(default_factory=dict)
     room_utilization: dict[str, int] = field(default_factory=dict)
+    expected_hours: int = 0  # Total hours expected to be scheduled at this stage
+    scheduled_hours: int = 0  # Total hours actually scheduled at this stage
+
+    @property
+    def success_rate(self) -> float:
+        """Calculate the scheduling success rate as a percentage."""
+        if self.expected_hours == 0:
+            return 100.0
+        return (self.scheduled_hours / self.expected_hours) * 100
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
@@ -282,6 +328,9 @@ class ScheduleStatistics:
             "by_day": self.by_day,
             "by_shift": self.by_shift,
             "room_utilization": self.room_utilization,
+            "expected_hours": self.expected_hours,
+            "scheduled_hours": self.scheduled_hours,
+            "success_rate": round(self.success_rate, 2),
         }
 
 

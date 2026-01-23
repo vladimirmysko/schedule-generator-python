@@ -14,6 +14,10 @@ from .stage4 import (
     Stage4Scheduler,
     create_stage4_scheduler,
 )
+from .stage5 import (
+    Stage5Scheduler,
+    create_stage5_scheduler,
+)
 from .conflicts import ConflictTracker
 from .constants import (
     FIRST_SHIFT_EXTENDED_SLOTS,
@@ -51,27 +55,33 @@ from .models import (
     ScheduleStatistics,
     Stage3PracticalStream,
     Stage4LectureStream,
+    Stage5PracticalStream,
     TimeSlot,
     WeekType,
 )
 from .rooms import RoomManager
 from .utils import (
     build_lecture_dependency_map,
+    build_scheduled_lecture_days,
+    build_stage5_subgroup_pairs,
     build_subgroup_pairs,
     calculate_stage3_complexity_score,
     calculate_stage4_complexity_score,
+    calculate_stage5_complexity_score,
     clean_instructor_name,
     determine_shift,
     filter_stage1_lectures,
     filter_stage2_practicals,
     filter_stage3_practicals,
     filter_stage4_lectures,
+    filter_stage5_practicals,
     parse_group_year,
     parse_specialty_code,
     parse_subgroup_info,
     sort_practicals_by_complexity,
     sort_stage3_by_complexity,
     sort_stage4_by_complexity,
+    sort_stage5_by_complexity,
     sort_streams_by_priority,
 )
 
@@ -81,10 +91,12 @@ __all__ = [
     "Stage2Scheduler",
     "Stage3Scheduler",
     "Stage4Scheduler",
+    "Stage5Scheduler",
     "create_scheduler",
     "create_stage2_scheduler",
     "create_stage3_scheduler",
     "create_stage4_scheduler",
+    "create_stage5_scheduler",
     # Conflicts
     "ConflictTracker",
     # Constants
@@ -120,6 +132,7 @@ __all__ = [
     "PracticalStream",
     "Stage3PracticalStream",
     "Stage4LectureStream",
+    "Stage5PracticalStream",
     "Room",
     "Assignment",
     "ScheduleStatistics",
@@ -136,12 +149,17 @@ __all__ = [
     "filter_stage2_practicals",
     "filter_stage3_practicals",
     "filter_stage4_lectures",
+    "filter_stage5_practicals",
     "sort_streams_by_priority",
     "sort_practicals_by_complexity",
     "sort_stage3_by_complexity",
     "sort_stage4_by_complexity",
+    "sort_stage5_by_complexity",
     "build_lecture_dependency_map",
+    "build_scheduled_lecture_days",
     "build_subgroup_pairs",
+    "build_stage5_subgroup_pairs",
     "calculate_stage3_complexity_score",
     "calculate_stage4_complexity_score",
+    "calculate_stage5_complexity_score",
 ]

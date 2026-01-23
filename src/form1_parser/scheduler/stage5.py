@@ -1,4 +1,4 @@
-"""Stage 3 scheduling algorithm for practical-only streams without lecture dependencies."""
+"""Stage 5 scheduling algorithm for single-group practicals with lecture dependency."""
 
 from collections import defaultdict
 from datetime import datetime
@@ -12,37 +12,37 @@ from .models import (
     Room,
     ScheduleResult,
     ScheduleStatistics,
-    Stage3PracticalStream,
+    Stage5PracticalStream,
     UnscheduledReason,
     UnscheduledStream,
     WeekType,
 )
 from .rooms import RoomManager
 from .utils import (
-    build_subgroup_pairs,
-    calculate_stage3_complexity_score,
-    filter_stage3_practicals,
+    STAGE5_PE_SUBJECTS,
+    build_scheduled_lecture_days,
+    build_stage5_subgroup_pairs,
+    build_subjects_with_lectures,
+    calculate_stage5_complexity_score,
+    clean_instructor_name,
+    filter_stage5_practicals,
     load_second_shift_groups,
-    sort_stage3_by_complexity,
+    sort_stage5_by_complexity,
 )
 
 
-class Stage3Scheduler:
-    """Scheduler for Stage 3: practical streams without lecture hours.
+class Stage5Scheduler:
+    """Scheduler for Stage 5: single-group practicals with lecture dependency.
 
-    Stage 3 handles practical-only streams (~152 streams, ~6,525 hours),
-    primarily language subjects (Foreign Language, Russian, Kazakh)
-    and some art/architecture subjects.
+    Handles ~450 practical streams with exactly 1 group that have
+    corresponding lectures scheduled in previous stages.
 
-    Key differences from Stage 2:
-    1. No lecture dependency - can schedule any day Mon-Fri
-    2. Subgroup pairing - both subgroups should be parallel when possible
-    3. Critical pair handling - sequential scheduling at day boundaries
-    4. Gap filling priority - fill existing schedule gaps
-
-    Subgroup Handling:
-    - Different instructors: Schedule both in parallel (same day/slot)
-    - Same instructor (CRITICAL): Schedule sequentially at day boundaries
+    Key features:
+    1. Lecture dependency - prefers days WITHOUT lectures for the subject
+    2. Can use any weekday (Mon-Fri)
+    3. Subgroup pairing - different instructors can run in parallel
+    4. PE streams scheduled last (most flexible)
+    5. Gap-filling strategy (prefer days with existing classes)
     """
 
     WEEKDAYS = [Day.MONDAY, Day.TUESDAY, Day.WEDNESDAY, Day.THURSDAY, Day.FRIDAY]
@@ -58,7 +58,7 @@ class Stage3Scheduler:
         instructor_day_constraints: list[dict] | None = None,
         second_shift_groups: set[str] | None = None,
     ) -> None:
-        """Initialize the Stage 3 scheduler.
+        """Initialize the Stage 5 scheduler.
 
         Args:
             rooms_csv: Path to rooms.csv file
@@ -72,6 +72,7 @@ class Stage3Scheduler:
         """
         self.instructor_availability = instructor_availability
         self.second_shift_groups = second_shift_groups
+        self.subject_rooms = subject_rooms or {}
         self.conflict_tracker = ConflictTracker(
             instructor_availability, nearby_buildings, instructor_day_constraints
         )
@@ -79,7 +80,11 @@ class Stage3Scheduler:
             rooms_csv, subject_rooms, instructor_rooms, group_buildings
         )
         # Track scheduled subgroup pairs to coordinate parallel scheduling
-        self._subgroup_schedule: dict[str, tuple[Day, int]] = {}  # stream_id -> (day, slot)
+        self._subgroup_schedule: dict[
+            str, tuple[Day, int]
+        ] = {}  # stream_id -> (day, slot)
+        # Track lecture days per subject for scheduling preference
+        self._lecture_days: dict[str, list[Day]] = {}
 
     def schedule(
         self,
@@ -87,15 +92,15 @@ class Stage3Scheduler:
         previous_assignments: list[dict],
         previous_unscheduled: list[dict] | None = None,
     ) -> ScheduleResult:
-        """Generate schedule for Stage 3 practicals.
+        """Generate schedule for Stage 5 single-group practicals.
 
         Args:
             streams: List of stream dictionaries from parsed JSON
-            previous_assignments: List of assignment dicts from Stage 1+2 schedule
-            previous_unscheduled: List of unscheduled stream dicts from Stage 2 (optional)
+            previous_assignments: List of assignment dicts from Stage 1-4 schedule
+            previous_unscheduled: List of unscheduled stream dicts from Stage 4 (optional)
 
         Returns:
-            ScheduleResult with combined previous + Stage 3 assignments
+            ScheduleResult with combined previous + Stage 5 assignments
         """
         # 1. Load previous assignments into conflict tracker and room manager
         self.conflict_tracker.load_stage1_assignments(previous_assignments)
@@ -104,35 +109,74 @@ class Stage3Scheduler:
         # 2. Build set of already scheduled stream IDs
         scheduled_ids = {a.get("stream_id", "") for a in previous_assignments}
 
-        # 3. Filter practicals for Stage 3
-        practicals = filter_stage3_practicals(
+        # 3. Build mapping of subject -> lecture days
+        self._lecture_days = build_scheduled_lecture_days(previous_assignments)
+
+        # 4. Build set of subjects that have lectures
+        subjects_with_lectures = build_subjects_with_lectures(streams)
+        # Add subjects from scheduled lectures (some may not be in parsed streams)
+        for subject in self._lecture_days.keys():
+            subjects_with_lectures.add(subject)
+
+        # 5. Filter single-group practicals for Stage 5
+        practicals = filter_stage5_practicals(
             streams,
             scheduled_ids,
+            subjects_with_lectures,
             self.instructor_availability,
             self.second_shift_groups,
         )
 
-        # 4. Build subgroup pairs and identify critical pairs
-        subgroup_pairs = build_subgroup_pairs(practicals)
-
-        # 5. Compute complexity scores and sort
+        # 6. Set lecture days on streams
         for stream in practicals:
-            instructor_load = self.conflict_tracker.get_instructor_total_scheduled_hours(
-                stream.instructor
-            )
-            existing_slots = self.conflict_tracker.get_group_total_scheduled_hours(
-                stream.groups
-            )
-            stream.complexity_score = calculate_stage3_complexity_score(
-                stream, instructor_load, existing_slots
-            )
+            stream.lecture_days = self._lecture_days.get(stream.subject, [])
 
-        sorted_practicals = sort_stage3_by_complexity(practicals)
+        # 7. Build subgroup pairs and identify critical pairs
+        subgroup_pairs = build_stage5_subgroup_pairs(practicals)
 
-        # 6. Calculate expected hours for this stage
+        # 8. Compute complexity scores
+        instructor_stream_counts = self._count_instructor_streams(practicals)
+        group_slot_availability = self._compute_group_availability(practicals)
+
+        for stream in practicals:
+            instructor_count = instructor_stream_counts.get(stream.instructor, 1)
+            group_slots = group_slot_availability.get(stream.groups[0], 35)
+            has_room_constraint = stream.subject in self.subject_rooms
+            is_pe = stream.subject in STAGE5_PE_SUBJECTS
+
+            # Calculate unavailable slots from instructor availability
+            unavailable = 0
+            if self.instructor_availability:
+                clean_name = clean_instructor_name(stream.instructor)
+                for record in self.instructor_availability:
+                    if record.get("name") == clean_name:
+                        weekly = record.get("weekly_unavailable", {})
+                        for day in [
+                            "monday",
+                            "tuesday",
+                            "wednesday",
+                            "thursday",
+                            "friday",
+                        ]:
+                            unavailable += len(weekly.get(day, []))
+                        break
+
+            stream.complexity_score = calculate_stage5_complexity_score(
+                stream,
+                group_available_slots=group_slots,
+                instructor_unavailable_slots=unavailable,
+                instructor_stream_count=instructor_count,
+                subject_has_room_constraints=has_room_constraint,
+                is_pe_subject=is_pe,
+            )
+            stream.group_available_slots = group_slots
+
+        sorted_practicals = sort_stage5_by_complexity(practicals)
+
+        # 9. Calculate expected hours for this stage
         expected_hours = sum(stream.max_hours for stream in sorted_practicals)
 
-        # 7. Schedule each practical
+        # 10. Schedule each practical
         new_assignments: list[Assignment] = []
         unscheduled_ids: list[str] = []
         unscheduled_streams: list[UnscheduledStream] = []
@@ -152,15 +196,15 @@ class Stage3Scheduler:
                 unscheduled_ids.append(stream.id)
                 unscheduled_streams.append(result)
 
-        # 8. Calculate scheduled hours
+        # 11. Calculate scheduled hours (number of new assignments)
         scheduled_hours = len(new_assignments)
 
-        # 9. Combine previous + Stage 3 assignments
+        # 12. Combine previous + Stage 5 assignments
         combined_assignments = (
             self._convert_to_assignments(previous_assignments) + new_assignments
         )
 
-        # 10. Combine previous + Stage 3 unscheduled streams
+        # 13. Combine previous + Stage 5 unscheduled streams
         all_unscheduled_ids = unscheduled_ids.copy()
         all_unscheduled_streams = unscheduled_streams.copy()
 
@@ -175,24 +219,75 @@ class Stage3Scheduler:
                         groups=u.get("groups", []),
                         student_count=u.get("student_count", 0),
                         shift=Shift(u.get("shift", "first")),
-                        reason=UnscheduledReason(u.get("reason", "unknown")),
+                        reason=UnscheduledReason(
+                            u.get("reason", "all_slots_exhausted")
+                        ),
                         details=u.get("details", ""),
                     )
                 )
 
-        # 11. Compute statistics
+        # 14. Compute statistics
         statistics = self._compute_statistics(
             combined_assignments, expected_hours, scheduled_hours
         )
 
         return ScheduleResult(
             generation_date=datetime.now().isoformat(),
-            stage=3,
+            stage=5,
             assignments=combined_assignments,
             unscheduled_stream_ids=all_unscheduled_ids,
             unscheduled_streams=all_unscheduled_streams,
             statistics=statistics,
         )
+
+    def _count_instructor_streams(
+        self, streams: list[Stage5PracticalStream]
+    ) -> dict[str, int]:
+        """Count how many streams each instructor has.
+
+        Args:
+            streams: List of Stage5PracticalStream objects
+
+        Returns:
+            Dict mapping instructor name to stream count
+        """
+        counts: dict[str, int] = defaultdict(int)
+        for stream in streams:
+            counts[stream.instructor] += 1
+        return counts
+
+    def _compute_group_availability(
+        self, streams: list[Stage5PracticalStream]
+    ) -> dict[str, int]:
+        """Compute available slots for each group.
+
+        Args:
+            streams: List of Stage5PracticalStream objects
+
+        Returns:
+            Dict mapping group name to available slot count
+        """
+        availability: dict[str, int] = {}
+
+        for stream in streams:
+            for group in stream.groups:
+                if group in availability:
+                    continue
+
+                # Count available slots on all weekdays
+                total_slots = 0
+                valid_slots = get_slots_for_shift(stream.shift)
+
+                for day in self.WEEKDAYS:
+                    for slot in valid_slots:
+                        if self.conflict_tracker.are_groups_available(
+                            [group], day, slot, WeekType.BOTH
+                        ):
+                            total_slots += 1
+
+                availability[group] = total_slots
+
+        return availability
 
     def _load_previous_rooms(self, assignments: list[dict]) -> None:
         """Load previous room assignments into room manager.
@@ -242,14 +337,14 @@ class Stage3Scheduler:
 
     def _schedule_stream(
         self,
-        stream: Stage3PracticalStream,
-        subgroup_pairs: dict[str, list[Stage3PracticalStream]],
+        stream: Stage5PracticalStream,
+        subgroup_pairs: dict[str, list[Stage5PracticalStream]],
         scheduled_stream_ids: set[str],
     ) -> list[Assignment] | UnscheduledStream:
-        """Schedule a single Stage 3 stream.
+        """Schedule a single Stage 5 stream.
 
         Args:
-            stream: Stage3PracticalStream to schedule
+            stream: Stage5PracticalStream to schedule
             subgroup_pairs: Mapping of subgroup pairs
             scheduled_stream_ids: Set of already scheduled stream IDs
 
@@ -263,28 +358,22 @@ class Stage3Scheduler:
 
         # Handle subgroup streams specially
         if stream.is_subgroup:
-            if stream.is_critical_pair:
-                # Critical pair: same instructor teaches both subgroups
-                # Must schedule at day boundaries
-                return self._schedule_critical_pair(
-                    stream, subgroup_pairs, scheduled_stream_ids
-                )
-            else:
-                # Normal subgroup: try to schedule in parallel with paired stream
-                return self._schedule_parallel_subgroup(
-                    stream, subgroup_pairs, scheduled_stream_ids
-                )
+            # For Stage 5, all subgroup pairs have different instructors
+            # (critical pairs with same instructor are rare and handled by Stage 3)
+            return self._schedule_parallel_subgroup(
+                stream, subgroup_pairs, scheduled_stream_ids
+            )
 
         # Non-subgroup stream: standard scheduling
         return self._schedule_non_subgroup(stream)
 
     def _schedule_non_subgroup(
-        self, stream: Stage3PracticalStream, remaining_hours: int | None = None
+        self, stream: Stage5PracticalStream, remaining_hours: int | None = None
     ) -> list[Assignment] | UnscheduledStream:
         """Schedule a non-subgroup practical stream.
 
         Args:
-            stream: Stage3PracticalStream to schedule
+            stream: Stage5PracticalStream to schedule
             remaining_hours: If specified, schedule only this many hours (for split scheduling)
 
         Returns:
@@ -319,7 +408,6 @@ class Stage3Scheduler:
                             if isinstance(rest_result, list):
                                 return partial_assignments + rest_result
                             # If rest fails, return what we have so far
-                            # (partial scheduling is better than none)
                         break
 
             return UnscheduledStream(
@@ -335,8 +423,8 @@ class Stage3Scheduler:
 
     def _schedule_parallel_subgroup(
         self,
-        stream: Stage3PracticalStream,
-        subgroup_pairs: dict[str, list[Stage3PracticalStream]],
+        stream: Stage5PracticalStream,
+        subgroup_pairs: dict[str, list[Stage5PracticalStream]],
         scheduled_stream_ids: set[str],
         remaining_hours: int | None = None,
     ) -> list[Assignment] | UnscheduledStream:
@@ -346,7 +434,7 @@ class Stage3Scheduler:
         Students choose which subgroup to attend.
 
         Args:
-            stream: Stage3PracticalStream to schedule
+            stream: Stage5PracticalStream to schedule
             subgroup_pairs: Mapping of subgroup pairs
             scheduled_stream_ids: Set of already scheduled stream IDs
             remaining_hours: If specified, schedule only this many hours (for split scheduling)
@@ -359,7 +447,10 @@ class Stage3Scheduler:
             return []
 
         # Check if paired stream is already scheduled
-        if stream.paired_stream_id and stream.paired_stream_id in self._subgroup_schedule:
+        if (
+            stream.paired_stream_id
+            and stream.paired_stream_id in self._subgroup_schedule
+        ):
             # Try to schedule at the same position as paired stream
             paired_day, paired_slot = self._subgroup_schedule[stream.paired_stream_id]
             if self._can_schedule_at(stream, paired_day, paired_slot, hours):
@@ -419,126 +510,26 @@ class Stage3Scheduler:
                 details=f"Could not find parallel slot: {details}",
             )
 
-    def _schedule_critical_pair(
-        self,
-        stream: Stage3PracticalStream,
-        subgroup_pairs: dict[str, list[Stage3PracticalStream]],
-        scheduled_stream_ids: set[str],
-        remaining_hours: int | None = None,
-    ) -> list[Assignment] | UnscheduledStream:
-        """Schedule a critical subgroup pair (same instructor teaches both).
-
-        Critical pairs must be scheduled at day boundaries:
-        - Start of day: Subgroup 1 first, then Subgroup 2
-        - End of day: Subgroup 1, then Subgroup 2 (Subgroup 1 can leave)
-
-        Args:
-            stream: Stage3PracticalStream to schedule
-            subgroup_pairs: Mapping of subgroup pairs
-            scheduled_stream_ids: Set of already scheduled stream IDs
-            remaining_hours: If specified, schedule only this many hours (for split scheduling)
-
-        Returns:
-            List of Assignment objects or UnscheduledStream
-        """
-        hours = remaining_hours if remaining_hours is not None else stream.max_hours
-        if hours == 0:
-            return []
-
-        valid_slots = get_slots_for_shift(stream.shift)
-
-        # Try to find day boundary positions
-        best_position: tuple[Day, int, str] | None = None
-
-        # Sort days by group load (prefer least loaded)
-        day_loads = {
-            day: self.conflict_tracker.get_groups_total_daily_load(stream.groups, day)
-            for day in self.WEEKDAYS
-        }
-        sorted_days = sorted(self.WEEKDAYS, key=lambda d: day_loads[d])
-
-        for day in sorted_days:
-            boundary_positions = self.conflict_tracker.find_day_boundary_slots(
-                stream.instructor,
-                stream.groups,
-                day,
-                valid_slots,
-                hours,
-                WeekType.BOTH,
-            )
-
-            for slot, position in boundary_positions:
-                # Check additional constraints
-                if self._passes_all_checks(stream, day, slot, hours):
-                    best_position = (day, slot, position)
-                    break
-
-            if best_position:
-                break
-
-        if best_position:
-            day, start_slot, position = best_position
-            assignments = self._create_assignments(stream, day, start_slot, hours)
-            if isinstance(assignments, list):
-                self._subgroup_schedule[stream.id] = (day, start_slot)
-                return assignments
-            return assignments
-
-        # Try split scheduling for critical pairs at day boundaries
-        if hours > 1:
-            found_partial = False
-            for partial_hours in range(hours - 1, 0, -1):
-                if found_partial:
-                    break
-                # Try to find boundary positions for partial hours
-                for day in sorted_days:
-                    if found_partial:
-                        break
-                    boundary_positions = self.conflict_tracker.find_day_boundary_slots(
-                        stream.instructor,
-                        stream.groups,
-                        day,
-                        valid_slots,
-                        partial_hours,
-                        WeekType.BOTH,
-                    )
-
-                    for slot, position in boundary_positions:
-                        if self._passes_all_checks(stream, day, slot, partial_hours):
-                            partial_assignments = self._create_assignments(
-                                stream, day, slot, partial_hours
-                            )
-                            if isinstance(partial_assignments, list):
-                                self._subgroup_schedule[stream.id] = (day, slot)
-                                # Recursively schedule remaining hours
-                                remaining = hours - partial_hours
-                                rest_result = self._schedule_critical_pair(
-                                    stream,
-                                    subgroup_pairs,
-                                    scheduled_stream_ids,
-                                    remaining,
-                                )
-                                if isinstance(rest_result, list):
-                                    return partial_assignments + rest_result
-                                found_partial = True
-                            break
-
-        # Fallback: try standard scheduling (which also has split scheduling)
-        return self._schedule_non_subgroup(stream, remaining_hours)
-
     def _find_best_position(
-        self, stream: Stage3PracticalStream, hours: int
+        self, stream: Stage5PracticalStream, hours: int
     ) -> tuple[Day, int] | tuple[UnscheduledReason, str]:
         """Find the best (day, starting_slot) for a stream.
 
         Strategy:
-        1. Try to fill gaps in existing group schedules first
-        2. Prefer days with existing classes (reduce travel days)
-        3. Respect shift boundaries
-        4. Check building proximity constraints
+        PHASE 1: Try days WITHOUT lectures first (soft preference)
+        - Sort by group's daily load (prefer days with existing classes)
+        - Try gap-filling first, then all slots
+
+        PHASE 2: Try days WITH lectures (fallback)
+        - Apply 2-hour subject daily limit
+
+        PHASE 3: Try extended slots (6-7) for first-shift
+        - Only when standard slots exhausted
+
+        For 2+ hour streams: Find consecutive available slots
 
         Args:
-            stream: Stage3PracticalStream to schedule
+            stream: Stage5PracticalStream to schedule
             hours: Number of consecutive hours needed
 
         Returns:
@@ -553,71 +544,60 @@ class Stage3Scheduler:
         else:
             extended_slots = valid_slots
 
+        # Get lecture days for this subject
+        lecture_days_set = set(stream.lecture_days)
+
+        # Split days into non-lecture and lecture days
+        non_lecture_days = [d for d in self.WEEKDAYS if d not in lecture_days_set]
+        lecture_days = [d for d in self.WEEKDAYS if d in lecture_days_set]
+
         # Sort days by group load (prefer days with existing classes, then least loaded)
         day_loads = {
             day: self.conflict_tracker.get_groups_total_daily_load(stream.groups, day)
             for day in self.WEEKDAYS
         }
 
-        # Prefer days that already have classes (consolidate)
-        days_with_classes = [d for d in self.WEEKDAYS if day_loads[d] > 0]
-        days_without_classes = [d for d in self.WEEKDAYS if day_loads[d] == 0]
+        def sort_days_by_load(days: list[Day]) -> list[Day]:
+            """Sort days: first those with classes (consolidate), then by load."""
+            days_with_classes = [d for d in days if day_loads[d] > 0]
+            days_without_classes = [d for d in days if day_loads[d] == 0]
+            sorted_with = sorted(days_with_classes, key=lambda d: day_loads[d])
+            sorted_without = sorted(days_without_classes, key=lambda d: day_loads[d])
+            return sorted_with + sorted_without
 
-        # Sort each group by load
-        sorted_with = sorted(days_with_classes, key=lambda d: day_loads[d])
-        sorted_without = sorted(days_without_classes, key=lambda d: day_loads[d])
-
-        # Try days with existing classes first, then empty days
-        sorted_days = sorted_with + sorted_without
+        sorted_non_lecture_days = sort_days_by_load(non_lecture_days)
+        sorted_lecture_days = sort_days_by_load(lecture_days)
 
         last_reason: UnscheduledReason | None = None
         last_details: str = ""
         positions_tried = 0
 
-        # Try standard slots first
-        for day in sorted_days:
-            # Get existing slots for this group to find gaps
-            existing_slots = set()
-            for group in stream.groups:
-                existing_slots.update(
-                    self.conflict_tracker.get_group_slots_on_day(group, day)
-                )
-
-            # Try to fill gaps first if group has existing classes
-            if existing_slots:
-                gap_slots = self._find_gap_slots(
-                    list(existing_slots), valid_slots, hours
-                )
-                for slot in gap_slots:
-                    positions_tried += 1
-                    if self._passes_all_checks(stream, day, slot, hours):
-                        return (day, slot)
-
-            # Then try all other slots in order
-            for slot in valid_slots:
-                if hours > 1:
-                    consecutive_valid = all(
-                        (slot + i) in valid_slots for i in range(hours)
-                    )
-                    if not consecutive_valid:
-                        continue
-
+        # PHASE 1: Try non-lecture days first
+        for day in sorted_non_lecture_days:
+            result = self._try_day(stream, day, hours, valid_slots)
+            if result is not None:
+                if isinstance(result[0], Day):
+                    return result
                 positions_tried += 1
-                passed, reason, details = self._check_all_constraints(
-                    stream, day, slot, hours
-                )
+                last_reason, last_details = result
 
-                if passed:
-                    return (day, slot)
+        # PHASE 2: Try lecture days (fallback)
+        for day in sorted_lecture_days:
+            result = self._try_day(stream, day, hours, valid_slots)
+            if result is not None:
+                if isinstance(result[0], Day):
+                    return result
+                positions_tried += 1
+                last_reason, last_details = result
 
-                last_reason = reason
-                last_details = details
-
-        # Try extended slots for first shift
+        # PHASE 3: Try extended slots for first shift
         if stream.shift == Shift.FIRST:
             overflow_slots = [s for s in extended_slots if s not in valid_slots]
 
-            for day in sorted_days:
+            # Try all days with extended slots
+            all_sorted_days = sorted_non_lecture_days + sorted_lecture_days
+
+            for day in all_sorted_days:
                 for slot in overflow_slots:
                     if hours > 1:
                         consecutive_valid = all(
@@ -651,6 +631,66 @@ class Stage3Scheduler:
             UnscheduledReason.ALL_SLOTS_EXHAUSTED,
             f"All {positions_tried} positions exhausted",
         )
+
+    def _try_day(
+        self,
+        stream: Stage5PracticalStream,
+        day: Day,
+        hours: int,
+        valid_slots: list[int],
+    ) -> tuple[Day, int] | tuple[UnscheduledReason, str] | None:
+        """Try to schedule on a specific day.
+
+        Args:
+            stream: Stream to schedule
+            day: Day to try
+            hours: Hours needed
+            valid_slots: Valid slots for this shift
+
+        Returns:
+            (Day, slot) if successful, (reason, details) if tried but failed, None if not tried
+        """
+        # Get existing slots for this group to find gaps
+        existing_slots = set()
+        for group in stream.groups:
+            existing_slots.update(
+                self.conflict_tracker.get_group_slots_on_day(group, day)
+            )
+
+        tried_any = False
+
+        # Try to fill gaps first if group has existing classes
+        if existing_slots:
+            gap_slots = self._find_gap_slots(list(existing_slots), valid_slots, hours)
+            for slot in gap_slots:
+                tried_any = True
+                if self._passes_all_checks(stream, day, slot, hours):
+                    return (day, slot)
+
+        # Then try all other slots in order
+        last_reason: UnscheduledReason | None = None
+        last_details: str = ""
+
+        for slot in valid_slots:
+            if hours > 1:
+                consecutive_valid = all((slot + i) in valid_slots for i in range(hours))
+                if not consecutive_valid:
+                    continue
+
+            tried_any = True
+            passed, reason, details = self._check_all_constraints(
+                stream, day, slot, hours
+            )
+
+            if passed:
+                return (day, slot)
+
+            last_reason = reason
+            last_details = details
+
+        if tried_any and last_reason:
+            return (last_reason, last_details)
+        return None
 
     def _find_gap_slots(
         self, existing_slots: list[int], valid_slots: list[int], hours_needed: int
@@ -691,12 +731,12 @@ class Stage3Scheduler:
         return gap_slots
 
     def _can_schedule_at(
-        self, stream: Stage3PracticalStream, day: Day, slot: int, hours: int
+        self, stream: Stage5PracticalStream, day: Day, slot: int, hours: int
     ) -> bool:
         """Check if stream can be scheduled at given position.
 
         Args:
-            stream: Stage3PracticalStream to check
+            stream: Stage5PracticalStream to check
             day: Day of the week
             slot: Starting slot
             hours: Number of hours needed
@@ -707,7 +747,7 @@ class Stage3Scheduler:
         return self._passes_all_checks(stream, day, slot, hours)
 
     def _passes_all_checks(
-        self, stream: Stage3PracticalStream, day: Day, slot: int, hours: int
+        self, stream: Stage5PracticalStream, day: Day, slot: int, hours: int
     ) -> bool:
         """Check if a position passes all scheduling constraints.
 
@@ -724,7 +764,7 @@ class Stage3Scheduler:
         return passed
 
     def _check_all_constraints(
-        self, stream: Stage3PracticalStream, day: Day, slot: int, hours: int
+        self, stream: Stage5PracticalStream, day: Day, slot: int, hours: int
     ) -> tuple[bool, UnscheduledReason | None, str]:
         """Check all scheduling constraints for a position.
 
@@ -776,8 +816,10 @@ class Stage3Scheduler:
                 )
 
             # 3b. Max windows check
-            would_create, window_group = self.conflict_tracker.would_create_second_window(
-                stream.groups, day, current_slot
+            would_create, window_group = (
+                self.conflict_tracker.would_create_second_window(
+                    stream.groups, day, current_slot
+                )
             )
             if would_create:
                 return (
@@ -798,7 +840,7 @@ class Stage3Scheduler:
                 return (False, avail_reason, avail_details)
 
             # 3d. Building gap constraint
-            current_room = self.room_manager.find_room_for_stage3(
+            current_room = self.room_manager.find_room_for_stage5(
                 stream, day, current_slot
             )
             if current_room:
@@ -822,7 +864,7 @@ class Stage3Scheduler:
             return (False, UnscheduledReason.INSTRUCTOR_DAY_CONSTRAINT, day_details)
 
         # 5. Room availability
-        room = self.room_manager.find_room_for_stage3(stream, day, slot)
+        room = self.room_manager.find_room_for_stage5(stream, day, slot)
         if not room:
             return (
                 False,
@@ -834,7 +876,7 @@ class Stage3Scheduler:
 
     def _create_assignments(
         self,
-        stream: Stage3PracticalStream,
+        stream: Stage5PracticalStream,
         day: Day,
         start_slot: int,
         hours: int,
@@ -842,7 +884,7 @@ class Stage3Scheduler:
         """Create assignments for consecutive hours on a single day.
 
         Args:
-            stream: Stage3PracticalStream to schedule
+            stream: Stage5PracticalStream to schedule
             day: Day to schedule on
             start_slot: Starting slot number
             hours: Number of consecutive hours to schedule
@@ -864,7 +906,7 @@ class Stage3Scheduler:
             ):
                 room = preferred_room
             else:
-                room = self.room_manager.find_room_for_stage3(stream, day, slot)
+                room = self.room_manager.find_room_for_stage5(stream, day, slot)
 
             if not room:
                 return UnscheduledStream(
@@ -957,7 +999,7 @@ class Stage3Scheduler:
         )
 
 
-def create_stage3_scheduler(
+def create_stage5_scheduler(
     rooms_csv: Path | str,
     subject_rooms_json: Path | str | None = None,
     instructor_rooms_json: Path | str | None = None,
@@ -966,8 +1008,8 @@ def create_stage3_scheduler(
     nearby_buildings_json: Path | str | None = None,
     instructor_days_json: Path | str | None = None,
     groups_second_shift_csv: Path | str | None = None,
-) -> Stage3Scheduler:
-    """Factory function to create a Stage3Scheduler with loaded reference data.
+) -> Stage5Scheduler:
+    """Factory function to create a Stage5Scheduler with loaded reference data.
 
     Args:
         rooms_csv: Path to rooms.csv file
@@ -980,7 +1022,7 @@ def create_stage3_scheduler(
         groups_second_shift_csv: Path to groups-second-shift.csv file (optional)
 
     Returns:
-        Configured Stage3Scheduler instance
+        Configured Stage5Scheduler instance
     """
     import json
 
@@ -1035,7 +1077,7 @@ def create_stage3_scheduler(
         if groups_second_shift_path.exists():
             second_shift_groups = load_second_shift_groups(groups_second_shift_path)
 
-    return Stage3Scheduler(
+    return Stage5Scheduler(
         rooms_path,
         subject_rooms,
         instructor_rooms,

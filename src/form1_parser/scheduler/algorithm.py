@@ -127,7 +127,10 @@ class Stage1Scheduler:
         # 2. Sort by priority (available slots, prac/lab hours, student count)
         prepared = sort_streams_by_priority(lectures)
 
-        # 3. Schedule each stream
+        # 3. Calculate expected hours for this stage
+        expected_hours = sum(stream.max_hours for stream in prepared)
+
+        # 4. Schedule each stream
         assignments: list[Assignment] = []
         unscheduled_ids: list[str] = []
         unscheduled_streams: list[UnscheduledStream] = []
@@ -141,8 +144,13 @@ class Stage1Scheduler:
                 unscheduled_ids.append(stream.id)
                 unscheduled_streams.append(result)
 
-        # 4. Compute statistics
-        statistics = self._compute_statistics(assignments)
+        # 5. Calculate scheduled hours
+        scheduled_hours = len(assignments)
+
+        # 6. Compute statistics
+        statistics = self._compute_statistics(
+            assignments, expected_hours, scheduled_hours
+        )
 
         return ScheduleResult(
             generation_date=datetime.now().isoformat(),
@@ -456,11 +464,18 @@ class Stage1Scheduler:
             f"All {positions_tried} positions exhausted (including Thu/Fri overflow)",
         )
 
-    def _compute_statistics(self, assignments: list[Assignment]) -> ScheduleStatistics:
+    def _compute_statistics(
+        self,
+        assignments: list[Assignment],
+        expected_hours: int = 0,
+        scheduled_hours: int = 0,
+    ) -> ScheduleStatistics:
         """Compute statistics for the generated schedule.
 
         Args:
             assignments: List of Assignment objects
+            expected_hours: Total hours expected to be scheduled at this stage
+            scheduled_hours: Total hours actually scheduled at this stage
 
         Returns:
             ScheduleStatistics object
@@ -486,6 +501,8 @@ class Stage1Scheduler:
             by_day=dict(by_day),
             by_shift=dict(by_shift),
             room_utilization=dict(room_utilization),
+            expected_hours=expected_hours,
+            scheduled_hours=scheduled_hours,
         )
 
 
@@ -654,7 +671,10 @@ class Stage2Scheduler:
             ),
         )
 
-        # 5. Schedule each practical
+        # 5. Calculate expected hours for this stage
+        expected_hours = sum(stream.max_hours for stream in sorted_practicals)
+
+        # 6. Schedule each practical
         new_assignments: list[Assignment] = []
         unscheduled_ids: list[str] = []
         unscheduled_streams: list[UnscheduledStream] = []
@@ -667,13 +687,18 @@ class Stage2Scheduler:
                 unscheduled_ids.append(stream.id)
                 unscheduled_streams.append(result)
 
-        # 6. Combine Stage 1 + Stage 2 assignments
+        # 7. Calculate scheduled hours
+        scheduled_hours = len(new_assignments)
+
+        # 8. Combine Stage 1 + Stage 2 assignments
         combined_assignments = (
             self._convert_stage1_to_assignments(stage1_assignments) + new_assignments
         )
 
-        # 7. Compute statistics
-        statistics = self._compute_statistics(combined_assignments)
+        # 9. Compute statistics
+        statistics = self._compute_statistics(
+            combined_assignments, expected_hours, scheduled_hours
+        )
 
         return ScheduleResult(
             generation_date=datetime.now().isoformat(),
@@ -1251,11 +1276,18 @@ class Stage2Scheduler:
 
         return (True, None, "")
 
-    def _compute_statistics(self, assignments: list[Assignment]) -> ScheduleStatistics:
+    def _compute_statistics(
+        self,
+        assignments: list[Assignment],
+        expected_hours: int = 0,
+        scheduled_hours: int = 0,
+    ) -> ScheduleStatistics:
         """Compute statistics for the generated schedule.
 
         Args:
             assignments: List of Assignment objects (Stage 1 + Stage 2)
+            expected_hours: Total hours expected to be scheduled at this stage
+            scheduled_hours: Total hours actually scheduled at this stage
 
         Returns:
             ScheduleStatistics object
@@ -1278,6 +1310,8 @@ class Stage2Scheduler:
             by_day=dict(by_day),
             by_shift=dict(by_shift),
             room_utilization=dict(room_utilization),
+            expected_hours=expected_hours,
+            scheduled_hours=scheduled_hours,
         )
 
 
