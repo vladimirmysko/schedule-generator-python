@@ -232,6 +232,50 @@ class Stage5PracticalStream:
 
 
 @dataclass
+class Stage6LabStream:
+    """Prepared lab stream for Stage 6 scheduling.
+
+    Stage 6 handles all lab streams with different sub-stages:
+    - 6A: Multi-group labs (Chemistry - 7 streams)
+    - 6B: Implicit subgroup labs with room constraint (Physics - 14 streams)
+    - 6C: Implicit subgroup labs without room constraint (24 streams)
+    - 6D: Single-group non-subgroup labs (10 streams)
+    """
+
+    id: str
+    subject: str
+    instructor: str
+    language: str
+    groups: list[str]
+    base_groups: list[str]  # Without subgroup suffix
+    subgroup_numbers: list[int | None]  # Subgroup numbers if present (1, 2, or None)
+    student_count: int
+    hours_odd_week: int
+    hours_even_week: int
+    shift: Shift
+    sheet: str
+    is_subgroup: bool
+    is_implicit_subgroup: bool  # For implicit subgroup labs
+    is_critical_pair: bool = False  # Same instructor teaches both subgroups
+    has_room_constraint: bool = (
+        False  # Subject requires specific room (e.g., Physics, Chemistry)
+    )
+    has_lecture_dependency: bool = False
+    lecture_days: list[Day] = field(default_factory=list)
+    complexity_score: float = 0.0
+    viable_positions: int = 0
+    paired_stream_id: str | None = None  # For subgroup pairing
+    instructor_available_slots: int = 0
+    group_available_slots: int = 0
+    category: str = ""  # "multi_group", "implicit_subgroup_constrained", "implicit_subgroup", "single_group"
+
+    @property
+    def max_hours(self) -> int:
+        """Maximum hours needed per week."""
+        return max(self.hours_odd_week, self.hours_even_week)
+
+
+@dataclass
 class Room:
     """A room for scheduling."""
 

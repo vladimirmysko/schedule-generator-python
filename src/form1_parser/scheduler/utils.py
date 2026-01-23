@@ -23,6 +23,7 @@ from .models import (
     Stage3PracticalStream,
     Stage4LectureStream,
     Stage5PracticalStream,
+    Stage6LabStream,
 )
 
 # Subjects to exclude from Stage 2 (subgroups, no paired lecture)
@@ -1426,3 +1427,322 @@ def sort_stage5_by_complexity(
         Sorted list with most complex (hardest to schedule) first
     """
     return sorted(streams, key=lambda s: -s.complexity_score)
+
+
+# ===========================
+# Stage 6 utility functions
+# ===========================
+
+# Subjects with lab room constraints
+STAGE6_ROOM_CONSTRAINED_SUBJECTS = ["Физика", "Химия"]
+
+# Physics lab room
+STAGE6_PHYSICS_LAB_ROOM = "306"
+
+# Chemistry lab room
+STAGE6_CHEMISTRY_LAB_ROOM = "112"
+
+
+def filter_stage6_labs(
+    streams: list[dict],
+    scheduled_stream_ids: set[str],
+    subjects_with_lectures: set[str],
+    instructor_availability: list[dict] | None = None,
+    second_shift_groups: set[str] | None = None,
+) -> list[Stage6LabStream]:
+    """Filter and convert streams to Stage6LabStream objects.
+
+    Stage 6 criteria:
+    1. Type is "lab"
+    2. NOT already scheduled in previous stages
+
+    Args:
+        streams: List of stream dictionaries from parsed JSON
+        scheduled_stream_ids: Set of stream IDs already scheduled in previous stages
+        subjects_with_lectures: Set of subjects that have lectures scheduled
+        instructor_availability: List of instructor availability records
+        second_shift_groups: Set of groups that require second shift scheduling
+
+    Returns:
+        List of Stage6LabStream objects ready for scheduling
+    """
+    stage6_streams: list[Stage6LabStream] = []
+
+    for stream in streams:
+        stream_type = stream.get("stream_type", "")
+
+        # Only labs
+        if stream_type != "lab":
+            continue
+
+        stream_id = stream.get("id", "")
+
+        # Skip if already scheduled
+        if stream_id in scheduled_stream_ids:
+            continue
+
+        hours = stream.get("hours", {})
+        odd_week = hours.get("odd_week", 0)
+        even_week = hours.get("even_week", 0)
+
+        # Skip streams with no hours
+        if odd_week == 0 and even_week == 0:
+            continue
+
+        subject = stream.get("subject", "")
+        instructor = stream.get("instructor", "")
+        groups = stream.get("groups", [])
+
+        # Determine if this is a subgroup stream
+        is_subgroup = is_subgroup_stream(groups)
+        is_implicit_subgroup = stream.get("is_implicit_subgroup", False)
+        base_groups = get_base_groups(groups)
+        subgroup_numbers = get_subgroup_numbers(groups)
+
+        # Determine shift (with second shift override)
+        shift = determine_practical_shift(groups, second_shift_groups)
+
+        # Calculate instructor available slots
+        available_slots = calculate_instructor_available_slots(
+            instructor, shift, instructor_availability
+        )
+
+        # Infer language
+        language = _infer_language_from_groups(groups)
+
+        # Check if subject has room constraint
+        has_room_constraint = subject in STAGE6_ROOM_CONSTRAINED_SUBJECTS
+
+        # Determine category
+        num_groups = len(groups)
+        if num_groups >= 2 and not is_subgroup and not is_implicit_subgroup:
+            category = "multi_group"
+        elif is_implicit_subgroup and has_room_constraint:
+            category = "implicit_subgroup_constrained"
+        elif is_implicit_subgroup:
+            category = "implicit_subgroup"
+        else:
+            category = "single_group"
+
+        # Check if subject has lectures
+        has_lecture_dependency = subject in subjects_with_lectures
+
+        stage6_stream = Stage6LabStream(
+            id=stream_id,
+            subject=subject,
+            instructor=instructor,
+            language=language,
+            groups=groups,
+            base_groups=base_groups,
+            subgroup_numbers=subgroup_numbers,
+            student_count=stream.get("student_count", 0),
+            hours_odd_week=odd_week,
+            hours_even_week=even_week,
+            shift=shift,
+            sheet=stream.get("sheet", ""),
+            is_subgroup=is_subgroup,
+            is_implicit_subgroup=is_implicit_subgroup,
+            is_critical_pair=False,  # Will be set by build_stage6_subgroup_pairs
+            has_room_constraint=has_room_constraint,
+            has_lecture_dependency=has_lecture_dependency,
+            complexity_score=0.0,  # Will be set later
+            instructor_available_slots=available_slots,
+            category=category,
+        )
+
+        stage6_streams.append(stage6_stream)
+
+    return stage6_streams
+
+
+def build_stage6_subgroup_pairs(
+    streams: list[Stage6LabStream],
+) -> dict[str, list[Stage6LabStream]]:
+    """Build mapping of subgroup pairs by (base_group, subject).
+
+    Also identifies critical pairs (same instructor teaches both subgroups)
+    and sets the is_critical_pair flag on the streams.
+
+    Args:
+        streams: List of Stage6LabStream objects
+
+    Returns:
+        Dict mapping (base_group, subject) tuple key to list of streams
+    """
+    # Group streams by (base_group, subject)
+    pairs: dict[str, list[Stage6LabStream]] = {}
+
+    for stream in streams:
+        if not stream.is_subgroup and not stream.is_implicit_subgroup:
+            continue
+
+        # For each base group in the stream
+        for base_group in stream.base_groups:
+            key = f"{base_group}:{stream.subject}"
+            if key not in pairs:
+                pairs[key] = []
+            pairs[key].append(stream)
+
+    # Identify critical pairs (same instructor teaches both subgroups)
+    for key, pair_streams in pairs.items():
+        if len(pair_streams) >= 2:
+            # Check if same instructor
+            instructors = {clean_instructor_name(s.instructor) for s in pair_streams}
+            if len(instructors) == 1:
+                # Same instructor teaches both subgroups - critical pair
+                for s in pair_streams:
+                    s.is_critical_pair = True
+
+            # Set paired_stream_id for subgroups
+            # Link each stream to the first "other" stream in the pair
+            for i, stream in enumerate(pair_streams):
+                for j, other in enumerate(pair_streams):
+                    if i != j:
+                        stream.paired_stream_id = other.id
+                        break
+
+    return pairs
+
+
+def calculate_stage6_complexity_score(
+    stream: Stage6LabStream,
+    group_available_slots: int = 35,
+    instructor_unavailable_slots: int = 0,
+    instructor_stream_count: int = 1,
+) -> float:
+    """Calculate complexity score for a Stage 6 lab stream.
+
+    Higher score = more constrained = should be scheduled first.
+
+    Category-based scoring:
+    - Multi-group labs (Chemistry): Highest priority
+    - Implicit subgroup with room constraint (Physics): Second priority
+    - Implicit subgroup without constraint: Third priority
+    - Single-group labs: Lowest priority
+
+    Formula:
+    - 500 if multi_group: Multi-group labs are hardest
+    - 420 if implicit_subgroup_constrained: Room constraint + pairing
+    - 300 if is_critical_pair: Same instructor teaches both subgroups
+    - 200 if is_implicit_subgroup: Implicit subgroups need pairing
+    - 150 if has_room_constraint: Room restrictions
+    - 100 * max_hours: Hours needed
+    - 80 * (35 - min(group_available_slots, 35)): Group constraint
+    - 50 if has_lecture_dependency: Lecture day preference
+    - 30 * (instructor_stream_count - 1): Instructor conflicts
+    - 5 * instructor_unavailable_slots: Instructor availability
+
+    Args:
+        stream: Stage6LabStream to evaluate
+        group_available_slots: Number of available slots for the group
+        instructor_unavailable_slots: Number of slots instructor is unavailable
+        instructor_stream_count: Total streams this instructor teaches
+
+    Returns:
+        Complexity score (higher = should be scheduled first)
+    """
+    score = 0.0
+
+    # Category-based base score
+    if stream.category == "multi_group":
+        score += 500
+    elif stream.category == "implicit_subgroup_constrained":
+        score += 420
+    elif stream.category == "implicit_subgroup":
+        score += 338  # As per plan complexity scoring
+    elif stream.category == "single_group":
+        score += 50  # Simplest
+
+    # Critical pair (same instructor teaches both subgroups)
+    if stream.is_critical_pair:
+        score += 300
+    elif stream.is_implicit_subgroup:
+        score += 200
+
+    # Room restrictions
+    if stream.has_room_constraint:
+        score += 150
+
+    # Hours needed
+    score += 100 * stream.max_hours
+
+    # Group constraint (fewer slots = higher score)
+    score += 80 * (35 - min(group_available_slots, 35))
+
+    # Lecture dependency (prefer different days from lecture)
+    if stream.has_lecture_dependency:
+        score += 50
+
+    # Instructor conflicts (more streams = harder to schedule)
+    score += 30 * (instructor_stream_count - 1)
+
+    # Instructor availability
+    score += 5 * instructor_unavailable_slots
+
+    return score
+
+
+def sort_stage6_by_complexity(
+    streams: list[Stage6LabStream],
+) -> list[Stage6LabStream]:
+    """Sort Stage 6 streams by complexity score (highest first).
+
+    Sorting order:
+    1. Multi-group labs (Category A)
+    2. Implicit subgroup labs with room constraint (Category B)
+    3. Implicit subgroup labs without room constraint (Category C)
+    4. Single-group non-subgroup labs (Category D)
+
+    Within each category, sorted by complexity score.
+
+    Args:
+        streams: List of Stage6LabStream objects
+
+    Returns:
+        Sorted list with most complex (hardest to schedule) first
+    """
+    category_order = {
+        "multi_group": 0,
+        "implicit_subgroup_constrained": 1,
+        "implicit_subgroup": 2,
+        "single_group": 3,
+    }
+
+    return sorted(
+        streams,
+        key=lambda s: (
+            category_order.get(s.category, 4),
+            -s.complexity_score,
+        ),
+    )
+
+
+def categorize_stage6_labs(
+    streams: list[Stage6LabStream],
+) -> dict[str, list[Stage6LabStream]]:
+    """Categorize Stage 6 lab streams into sub-stages.
+
+    Categories:
+    - A (multi_group): Multi-group labs (Chemistry)
+    - B (implicit_subgroup_constrained): Implicit subgroup labs with room constraint (Physics)
+    - C (implicit_subgroup): Implicit subgroup labs without room constraint
+    - D (single_group): Single-group non-subgroup labs
+
+    Args:
+        streams: List of Stage6LabStream objects
+
+    Returns:
+        Dict mapping category to list of streams
+    """
+    categories: dict[str, list[Stage6LabStream]] = {
+        "multi_group": [],
+        "implicit_subgroup_constrained": [],
+        "implicit_subgroup": [],
+        "single_group": [],
+    }
+
+    for stream in streams:
+        if stream.category in categories:
+            categories[stream.category].append(stream)
+
+    return categories
