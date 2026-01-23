@@ -15,7 +15,14 @@ from .constants import (
     YEAR_SHIFT_MAP,
     Shift,
 )
-from .models import Day, LectureDependency, LectureStream, PracticalStream, Stage3PracticalStream
+from .models import (
+    Day,
+    LectureDependency,
+    LectureStream,
+    PracticalStream,
+    Stage3PracticalStream,
+    Stage4LectureStream,
+)
 
 # Subjects to exclude from Stage 2 (subgroups, no paired lecture)
 STAGE2_EXCLUDED_SUBJECTS = ["Шетел тілі", "Орыс тілі", "Қазақ тілі"]
@@ -864,9 +871,7 @@ def build_subgroup_pairs(
     for key, pair_streams in pairs.items():
         if len(pair_streams) >= 2:
             # Check if same instructor
-            instructors = {
-                clean_instructor_name(s.instructor) for s in pair_streams
-            }
+            instructors = {clean_instructor_name(s.instructor) for s in pair_streams}
             if len(instructors) == 1:
                 # Same instructor teaches both subgroups - critical pair
                 for s in pair_streams:
@@ -957,6 +962,170 @@ def sort_stage3_by_complexity(
 
     Args:
         streams: List of Stage3PracticalStream objects
+
+    Returns:
+        Sorted list with most complex (hardest to schedule) first
+    """
+    return sorted(streams, key=lambda s: -s.complexity_score)
+
+
+# ===========================
+# Stage 4 utility functions
+# ===========================
+
+# Subjects that require specific IT computer lab rooms
+STAGE4_IT_SUBJECTS = [
+    "Информатика",
+    "Ақпараттану",
+    "Компьютерлік графика",
+    "Компьютерная графика",
+    "Мәліметтер базасы",
+    "Базы данных",
+]
+
+
+def filter_stage4_lectures(
+    streams: list[dict],
+    scheduled_stream_ids: set[str],
+    instructor_availability: list[dict] | None = None,
+) -> list[Stage4LectureStream]:
+    """Filter and convert streams to Stage4LectureStream objects.
+
+    Stage 4 criteria:
+    1. Type is "lecture"
+    2. Has exactly 1 group (single-group lectures)
+    3. NOT already scheduled in Stage 1/2/3
+
+    Args:
+        streams: List of stream dictionaries from parsed JSON
+        scheduled_stream_ids: Set of stream IDs already scheduled in previous stages
+        instructor_availability: List of instructor availability records
+
+    Returns:
+        List of Stage4LectureStream objects ready for scheduling
+    """
+    stage4_streams: list[Stage4LectureStream] = []
+
+    for stream in streams:
+        stream_type = stream.get("stream_type", "")
+
+        # Only lectures with exactly 1 group
+        if stream_type != "lecture":
+            continue
+
+        groups = stream.get("groups", [])
+        if len(groups) != 1:
+            continue
+
+        stream_id = stream.get("id", "")
+
+        # Skip if already scheduled
+        if stream_id in scheduled_stream_ids:
+            continue
+
+        hours = stream.get("hours", {})
+        odd_week = hours.get("odd_week", 0)
+        even_week = hours.get("even_week", 0)
+
+        # Skip streams with no hours
+        if odd_week == 0 and even_week == 0:
+            continue
+
+        subject = stream.get("subject", "")
+        instructor = stream.get("instructor", "")
+
+        # Determine shift from groups
+        shift = determine_shift(groups)
+
+        # Calculate instructor available slots for priority sorting
+        available_slots = calculate_instructor_available_slots(
+            instructor, shift, instructor_availability
+        )
+
+        # Infer language
+        language = _infer_language_from_groups(groups)
+
+        stage4_stream = Stage4LectureStream(
+            id=stream_id,
+            subject=subject,
+            instructor=instructor,
+            language=language,
+            groups=groups,
+            student_count=stream.get("student_count", 0),
+            hours_odd_week=odd_week,
+            hours_even_week=even_week,
+            shift=shift,
+            sheet=stream.get("sheet", ""),
+            complexity_score=0.0,  # Will be set later
+            instructor_available_slots=available_slots,
+        )
+
+        stage4_streams.append(stage4_stream)
+
+    return stage4_streams
+
+
+def calculate_stage4_complexity_score(
+    stream: Stage4LectureStream,
+    group_available_slots: int = 35,
+    instructor_unavailable_slots: int = 0,
+    instructor_stream_count: int = 1,
+    subject_has_room_constraints: bool = False,
+) -> float:
+    """Calculate complexity score for a Stage 4 lecture stream.
+
+    Higher score = more constrained = should be scheduled first.
+
+    Formula:
+    - 100 * (35 - min(group_available_slots, 35)): Group constraint (highest weight)
+    - 5 * instructor_unavailable_slots: Instructor availability
+    - 200 if subject_has_room_constraints: Room restrictions
+    - 50 * max_hours: Hours needed
+    - 30 * (instructor_stream_count - 1): Instructor conflicts
+    - 80 if first_shift: Shift penalty (first shift more constrained)
+
+    Args:
+        stream: Stage4LectureStream to evaluate
+        group_available_slots: Number of available slots for the group
+        instructor_unavailable_slots: Number of slots instructor is unavailable
+        instructor_stream_count: Total streams this instructor teaches
+        subject_has_room_constraints: Whether subject requires specific rooms
+
+    Returns:
+        Complexity score (higher = should be scheduled first)
+    """
+    score = 0.0
+
+    # Group constraint (highest weight) - fewer slots = higher score
+    score += 100 * (35 - min(group_available_slots, 35))
+
+    # Instructor availability
+    score += 5 * instructor_unavailable_slots
+
+    # Room restrictions (IT subjects need computer labs)
+    if subject_has_room_constraints:
+        score += 200
+
+    # Hours needed
+    score += 50 * stream.max_hours
+
+    # Instructor conflicts (more streams = harder to schedule)
+    score += 30 * (instructor_stream_count - 1)
+
+    # Shift penalty (first shift has fewer slots available after Stage 1-3)
+    if stream.shift == Shift.FIRST:
+        score += 80
+
+    return score
+
+
+def sort_stage4_by_complexity(
+    streams: list[Stage4LectureStream],
+) -> list[Stage4LectureStream]:
+    """Sort Stage 4 streams by complexity score (highest first).
+
+    Args:
+        streams: List of Stage4LectureStream objects
 
     Returns:
         Sorted list with most complex (hardest to schedule) first

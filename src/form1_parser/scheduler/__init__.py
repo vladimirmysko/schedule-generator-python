@@ -10,6 +10,10 @@ from .stage3 import (
     Stage3Scheduler,
     create_stage3_scheduler,
 )
+from .stage4 import (
+    Stage4Scheduler,
+    create_stage4_scheduler,
+)
 from .conflicts import ConflictTracker
 from .constants import (
     FIRST_SHIFT_EXTENDED_SLOTS,
@@ -46,6 +50,7 @@ from .models import (
     ScheduleResult,
     ScheduleStatistics,
     Stage3PracticalStream,
+    Stage4LectureStream,
     TimeSlot,
     WeekType,
 )
@@ -54,16 +59,19 @@ from .utils import (
     build_lecture_dependency_map,
     build_subgroup_pairs,
     calculate_stage3_complexity_score,
+    calculate_stage4_complexity_score,
     clean_instructor_name,
     determine_shift,
     filter_stage1_lectures,
     filter_stage2_practicals,
     filter_stage3_practicals,
+    filter_stage4_lectures,
     parse_group_year,
     parse_specialty_code,
     parse_subgroup_info,
     sort_practicals_by_complexity,
     sort_stage3_by_complexity,
+    sort_stage4_by_complexity,
     sort_streams_by_priority,
 )
 
@@ -72,9 +80,11 @@ __all__ = [
     "Stage1Scheduler",
     "Stage2Scheduler",
     "Stage3Scheduler",
+    "Stage4Scheduler",
     "create_scheduler",
     "create_stage2_scheduler",
     "create_stage3_scheduler",
+    "create_stage4_scheduler",
     # Conflicts
     "ConflictTracker",
     # Constants
@@ -109,6 +119,7 @@ __all__ = [
     "LectureStream",
     "PracticalStream",
     "Stage3PracticalStream",
+    "Stage4LectureStream",
     "Room",
     "Assignment",
     "ScheduleStatistics",
@@ -124,10 +135,13 @@ __all__ = [
     "filter_stage1_lectures",
     "filter_stage2_practicals",
     "filter_stage3_practicals",
+    "filter_stage4_lectures",
     "sort_streams_by_priority",
     "sort_practicals_by_complexity",
     "sort_stage3_by_complexity",
+    "sort_stage4_by_complexity",
     "build_lecture_dependency_map",
     "build_subgroup_pairs",
     "calculate_stage3_complexity_score",
+    "calculate_stage4_complexity_score",
 ]

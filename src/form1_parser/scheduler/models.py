@@ -121,7 +121,9 @@ class PracticalStream:
     lecture_dependency: LectureDependency | None = None
     complexity_score: float = 0.0
     instructor_available_slots: int = 0  # Used for priority sorting
-    viable_positions: int = 0  # Number of valid day/slot combinations (computed at runtime)
+    viable_positions: int = (
+        0  # Number of valid day/slot combinations (computed at runtime)
+    )
 
     @property
     def max_hours(self) -> int:
@@ -157,6 +159,34 @@ class Stage3PracticalStream:
     viable_positions: int = 0
     paired_stream_id: str | None = None  # For subgroup pairing
     instructor_available_slots: int = 0
+
+    @property
+    def max_hours(self) -> int:
+        """Maximum hours needed per week."""
+        return max(self.hours_odd_week, self.hours_even_week)
+
+
+@dataclass
+class Stage4LectureStream:
+    """Prepared lecture stream for Stage 4 scheduling (single-group).
+
+    Stage 4 handles lecture streams with exactly 1 group, which couldn't
+    be scheduled in Stage 1 (which required 2+ groups).
+    """
+
+    id: str
+    subject: str
+    instructor: str
+    language: str
+    groups: list[str]  # Always single-element list
+    student_count: int
+    hours_odd_week: int
+    hours_even_week: int
+    shift: Shift
+    sheet: str
+    complexity_score: float = 0.0
+    instructor_available_slots: int = 0
+    group_available_slots: int = 0
 
     @property
     def max_hours(self) -> int:
