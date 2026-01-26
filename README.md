@@ -321,6 +321,64 @@ Examples:
 - Color coding: White (both weeks), Blue (odd week), Orange (even week)
 - Cell content: Subject, Stream type, Groups, Room + Address
 
+### Generate Unscheduled Excel
+
+Generate an Excel report of unscheduled streams in Russian. This report helps the schedule manager review and take action on streams that could not be automatically scheduled.
+
+```bash
+uv run form1-parser generate-unscheduled-excel <INPUT_FILE> [OPTIONS]
+```
+
+**Arguments:**
+- `INPUT_FILE` - Schedule JSON file from any scheduling stage (required)
+
+**Options:**
+- `-o, --output PATH` - Output Excel file path (default: output/unscheduled_streams.xlsx)
+
+**Examples:**
+
+```bash
+# Generate report with default output path
+uv run form1-parser generate-unscheduled-excel output/schedule-s7.json
+
+# Generate report with custom output path
+uv run form1-parser generate-unscheduled-excel output/schedule-s7.json -o output/unscheduled.xlsx
+```
+
+**Output Format:**
+
+The Excel file contains:
+- **Header:** Title "НЕРАСПРЕДЕЛЕННЫЕ ЗАНЯТИЯ" with generation date and total count
+- **Summary:** Breakdown of unscheduled streams by reason
+- **Table:** Detailed list with columns:
+  - № (row number)
+  - Предмет (subject)
+  - Преподаватель (instructor)
+  - Группы (groups)
+  - Кол-во студ. (student count)
+  - Смена (shift: 1-я смена / 2-я смена)
+  - Причина (reason in Russian)
+  - Подробности (details)
+
+**Reason Translations:**
+
+| English Code | Russian Translation |
+|--------------|---------------------|
+| instructor_conflict | Конфликт расписания преподавателя |
+| group_conflict | Конфликт расписания группы |
+| no_room_available | Нет свободной аудитории |
+| instructor_unavailable | Преподаватель недоступен |
+| no_consecutive_slots | Нет последовательных слотов |
+| all_slots_exhausted | Все слоты заняты |
+| building_gap_required | Требуется перерыв между корпусами |
+| no_lecture_dependency | Нет связанной лекции |
+| subject_daily_limit_exceeded | Превышен дневной лимит предмета |
+| daily_load_exceeded | Превышена дневная нагрузка группы |
+| max_windows_exceeded | Превышено количество окон |
+| instructor_day_constraint | Ограничение дня преподавателя |
+| no_parallel_subgroup | Нет параллельной подгруппы |
+| subgroup_pairing_failed | Не удалось сопоставить подгруппы |
+
 ## Testing
 
 ```bash
@@ -355,7 +413,8 @@ schedule-generator-python/
 │           ├── utils.py           # Scheduling utilities
 │           ├── exporter.py        # Schedule JSON export
 │           ├── excel_generator.py # Excel schedule generator
-│           └── instructor_excel_generator.py # Instructor schedule generator
+│           ├── instructor_excel_generator.py # Instructor schedule generator
+│           └── unscheduled_excel_generator.py # Unscheduled streams report
 ├── tests/
 │   ├── conftest.py
 │   ├── test_models.py

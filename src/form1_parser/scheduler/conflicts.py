@@ -407,6 +407,65 @@ class ConflictTracker:
                     building_address
                 )
 
+    def release_slot(
+        self,
+        instructor: str,
+        groups: list[str],
+        day: Day,
+        slot: int,
+        week_type: WeekType = WeekType.BOTH,
+        building_address: str | None = None,
+    ) -> None:
+        """Release a previously reserved slot (inverse of reserve()).
+
+        Args:
+            instructor: Instructor name
+            groups: List of group names
+            day: Day of the week
+            slot: Slot number
+            week_type: Week type to release (ODD, EVEN, or BOTH)
+            building_address: Building address for building change time constraint
+        """
+        # Clean instructor name
+        cleaned = clean_instructor_name(instructor)
+        self.instructor_schedule[(day, slot, week_type)].discard(cleaned)
+
+        for group in groups:
+            self.group_schedule[(day, slot, week_type)].discard(group)
+
+        # Decrement daily load for each group
+        for group in groups:
+            if self.group_daily_load[(group, day)] > 0:
+                self.group_daily_load[(group, day)] -= 1
+
+        # Remove building address tracking
+        if building_address:
+            for group in groups:
+                key = (group, day, slot, week_type)
+                if key in self.group_building_schedule:
+                    del self.group_building_schedule[key]
+
+    def release_subject_hours(
+        self,
+        groups: list[str],
+        day: Day,
+        subject: str,
+        hours: int,
+    ) -> None:
+        """Release subject hours for groups on a day (inverse of reserve_subject_hours()).
+
+        Args:
+            groups: List of group names
+            day: Day of the week
+            subject: Subject name
+            hours: Number of hours to release
+        """
+        for group in groups:
+            if self.group_subject_daily_hours[(group, day, subject)] >= hours:
+                self.group_subject_daily_hours[(group, day, subject)] -= hours
+            else:
+                self.group_subject_daily_hours[(group, day, subject)] = 0
+
     def get_group_building_at_slot(
         self, group: str, day: Day, slot: int, week_type: WeekType = WeekType.BOTH
     ) -> str | None:

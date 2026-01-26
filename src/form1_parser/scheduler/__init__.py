@@ -22,6 +22,10 @@ from .stage6 import (
     Stage6Scheduler,
     create_stage6_scheduler,
 )
+from .stage7 import (
+    Stage7Scheduler,
+    create_stage7_scheduler,
+)
 from .conflicts import ConflictTracker
 from .constants import (
     FIRST_SHIFT_EXTENDED_SLOTS,
@@ -45,6 +49,11 @@ from .instructor_excel_generator import (
     InstructorGeneratorConfig,
     InstructorScheduleExcelGenerator,
     generate_instructor_schedule_excel,
+)
+from .unscheduled_excel_generator import (
+    UnscheduledExcelGenerator,
+    UnscheduledGeneratorConfig,
+    generate_unscheduled_excel,
 )
 from .exporter import export_schedule_json, load_parsed_data
 from .models import (
@@ -103,12 +112,14 @@ __all__ = [
     "Stage4Scheduler",
     "Stage5Scheduler",
     "Stage6Scheduler",
+    "Stage7Scheduler",
     "create_scheduler",
     "create_stage2_scheduler",
     "create_stage3_scheduler",
     "create_stage4_scheduler",
     "create_stage5_scheduler",
     "create_stage6_scheduler",
+    "create_stage7_scheduler",
     # Conflicts
     "ConflictTracker",
     # Constants
@@ -131,6 +142,10 @@ __all__ = [
     "InstructorGeneratorConfig",
     "InstructorScheduleExcelGenerator",
     "generate_instructor_schedule_excel",
+    # Unscheduled Excel Generator
+    "UnscheduledExcelGenerator",
+    "UnscheduledGeneratorConfig",
+    "generate_unscheduled_excel",
     # Exporter
     "export_schedule_json",
     "load_parsed_data",

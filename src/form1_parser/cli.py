@@ -15,6 +15,7 @@ from .scheduler import (
     export_schedule_json,
     generate_instructor_schedule_excel,
     generate_schedule_excel,
+    generate_unscheduled_excel,
     load_parsed_data,
 )
 from .scheduler.algorithm import create_stage2_scheduler
@@ -22,6 +23,7 @@ from .scheduler.stage3 import create_stage3_scheduler
 from .scheduler.stage4 import create_stage4_scheduler
 from .scheduler.stage5 import create_stage5_scheduler
 from .scheduler.stage6 import create_stage6_scheduler
+from .scheduler.stage7 import create_stage7_scheduler
 
 app = typer.Typer(
     name="form1-parser",
@@ -1530,6 +1532,235 @@ def schedule_stage6(
     with console.status(f"[bold green]Exporting to {output_path}..."):
         export_schedule_json(result, output_path)
     console.print(f"\n[bold green]✓[/bold green] Schedule exported to: {output_path}")
+
+
+@app.command("schedule-stage7")
+def schedule_stage7(
+    parsed_file: Annotated[
+        Path,
+        typer.Argument(help="Parsed JSON file from form1-parser parse command"),
+    ],
+    stage6_file: Annotated[
+        Path,
+        typer.Argument(
+            help="Stage 6 schedule JSON file from form1-parser schedule-stage6 command"
+        ),
+    ],
+    output: Annotated[
+        Optional[Path],
+        typer.Option("-o", "--output", help="Output JSON file path"),
+    ] = None,
+    rooms_csv: Annotated[
+        Optional[Path],
+        typer.Option("--rooms", help="Path to rooms.csv file"),
+    ] = None,
+    subject_rooms: Annotated[
+        Optional[Path],
+        typer.Option("--subject-rooms", help="Path to subject-rooms.json file"),
+    ] = None,
+    instructor_rooms: Annotated[
+        Optional[Path],
+        typer.Option("--instructor-rooms", help="Path to instructor-rooms.json file"),
+    ] = None,
+    group_buildings: Annotated[
+        Optional[Path],
+        typer.Option("--group-buildings", help="Path to group-buildings.json file"),
+    ] = None,
+    instructor_availability: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--instructor-availability",
+            help="Path to instructor-availability.json file",
+        ),
+    ] = None,
+    nearby_buildings: Annotated[
+        Optional[Path],
+        typer.Option("--nearby-buildings", help="Path to nearby-buildings.json file"),
+    ] = None,
+    instructor_days: Annotated[
+        Optional[Path],
+        typer.Option("--instructor-days", help="Path to instructor-days.json file"),
+    ] = None,
+    groups_second_shift: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--groups-second-shift", help="Path to groups-second-shift.csv file"
+        ),
+    ] = None,
+    verbose: Annotated[
+        bool,
+        typer.Option("-v", "--verbose", help="Show detailed output"),
+    ] = False,
+) -> None:
+    """Optimize schedule: fill empty days, reschedule unscheduled streams."""
+    if not parsed_file.exists():
+        console.print(
+            f"[bold red]Error:[/bold red] Parsed file not found: {parsed_file}"
+        )
+        raise typer.Exit(1)
+
+    if not stage6_file.exists():
+        console.print(
+            f"[bold red]Error:[/bold red] Stage 6 file not found: {stage6_file}"
+        )
+        raise typer.Exit(1)
+
+    # Use default paths if not provided
+    rooms_path = rooms_csv or DEFAULT_ROOMS_CSV
+    subject_rooms_path = subject_rooms or DEFAULT_SUBJECT_ROOMS_JSON
+    instructor_rooms_path = instructor_rooms or DEFAULT_INSTRUCTOR_ROOMS_JSON
+    group_buildings_path = group_buildings or DEFAULT_GROUP_BUILDINGS_JSON
+    instructor_availability_path = (
+        instructor_availability or DEFAULT_INSTRUCTOR_AVAILABILITY_JSON
+    )
+    nearby_buildings_path = nearby_buildings or DEFAULT_NEARBY_BUILDINGS_JSON
+    instructor_days_path = instructor_days or DEFAULT_INSTRUCTOR_DAYS_JSON
+    groups_second_shift_path = groups_second_shift or DEFAULT_GROUPS_SECOND_SHIFT_CSV
+
+    # Validate rooms.csv exists
+    if not rooms_path.exists():
+        console.print(f"[bold red]Error:[/bold red] Rooms file not found: {rooms_path}")
+        raise typer.Exit(1)
+
+    with console.status("[bold green]Loading data..."):
+        data = load_parsed_data(parsed_file)
+        stage6_data = load_parsed_data(stage6_file)
+
+    streams = data.get("streams", [])
+    if not streams:
+        console.print(
+            "[bold yellow]Warning:[/bold yellow] No streams found in parsed file"
+        )
+        raise typer.Exit(1)
+
+    stage6_assignments = stage6_data.get("assignments", [])
+    if not stage6_assignments:
+        console.print(
+            "[bold yellow]Warning:[/bold yellow] No assignments found in Stage 6 file"
+        )
+        raise typer.Exit(1)
+
+    stage6_unscheduled = stage6_data.get("unscheduled_streams", [])
+
+    console.print(f"\n[bold]Stage 7 Schedule Optimization[/bold]")
+    console.print(f"  Parsed file: {parsed_file.name}")
+    console.print(f"  Stage 6 file: {stage6_file.name}")
+    console.print(f"  Total streams in input: {len(streams)}")
+    console.print(f"  Stage 6 assignments: {len(stage6_assignments)}")
+    console.print(f"  Stage 6 unscheduled: {len(stage6_unscheduled)}")
+
+    with console.status("[bold green]Running Stage 7 optimization..."):
+        scheduler = create_stage7_scheduler(
+            rooms_path,
+            subject_rooms_path if subject_rooms_path.exists() else None,
+            instructor_rooms_path if instructor_rooms_path.exists() else None,
+            group_buildings_path if group_buildings_path.exists() else None,
+            instructor_availability_path
+            if instructor_availability_path.exists()
+            else None,
+            nearby_buildings_path if nearby_buildings_path.exists() else None,
+            instructor_days_path if instructor_days_path.exists() else None,
+            groups_second_shift_path if groups_second_shift_path.exists() else None,
+        )
+        result = scheduler.schedule(streams, stage6_assignments, stage6_unscheduled)
+
+    # Show summary
+    console.print("\n[bold]Stage 7 Optimization Results:[/bold]")
+    console.print(f"  Total assignments: {result.total_assigned}")
+    console.print(f"  Remaining unscheduled: {result.total_unscheduled}")
+
+    # Show improvement
+    improvement = len(stage6_unscheduled) - result.total_unscheduled
+    if improvement > 0:
+        console.print(
+            f"\n[bold green]Improvement:[/bold green] "
+            f"Scheduled {improvement} previously unscheduled streams"
+        )
+
+    # Show scheduling success rate
+    stats = result.statistics
+    if stats.expected_hours > 0:
+        console.print(
+            f"\n[bold]Phase 7B Success Rate:[/bold] "
+            f"{stats.scheduled_hours}/{stats.expected_hours} streams "
+            f"([green]{stats.success_rate:.1f}%[/green])"
+        )
+
+    # Show statistics
+    if result.statistics.by_day:
+        console.print(f"\n[bold]Distribution by day:[/bold]")
+        for day, count in sorted(result.statistics.by_day.items()):
+            console.print(f"  {day.capitalize()}: {count}")
+
+    if result.statistics.by_shift:
+        console.print(f"\n[bold]Distribution by shift:[/bold]")
+        for shift, count in sorted(result.statistics.by_shift.items()):
+            console.print(f"  {shift.capitalize()}: {count}")
+
+    if verbose and result.statistics.room_utilization:
+        console.print(f"\n[bold]Room utilization by address:[/bold]")
+        for address, count in sorted(
+            result.statistics.room_utilization.items(), key=lambda x: -x[1]
+        ):
+            console.print(f"  {address}: {count}")
+
+    if verbose and result.unscheduled_streams:
+        console.print(
+            f"\n[bold yellow]Remaining unscheduled ({len(result.unscheduled_streams)}):[/bold yellow]"
+        )
+        # Group by reason
+        by_reason: dict[str, int] = {}
+        for stream in result.unscheduled_streams:
+            reason = stream.reason.value
+            by_reason[reason] = by_reason.get(reason, 0) + 1
+        for reason, count in sorted(by_reason.items(), key=lambda x: -x[1]):
+            console.print(f"  [yellow]{reason}: {count}[/yellow]")
+
+    # Export
+    if output:
+        output_path = (
+            output if output.suffix == ".json" else output.with_suffix(".json")
+        )
+    else:
+        output_path = Path("output/schedule-s7.json")
+
+    with console.status(f"[bold green]Exporting to {output_path}..."):
+        export_schedule_json(result, output_path)
+    console.print(f"\n[bold green]✓[/bold green] Schedule exported to: {output_path}")
+
+
+@app.command("generate-unscheduled-excel")
+def generate_unscheduled_excel_cmd(
+    input_file: Annotated[
+        Path,
+        typer.Argument(help="Schedule JSON file"),
+    ],
+    output: Annotated[
+        Optional[Path],
+        typer.Option("-o", "--output", help="Output Excel file"),
+    ] = None,
+) -> None:
+    """Generate Excel report of unscheduled streams (in Russian)."""
+    if not input_file.exists():
+        console.print(f"[bold red]Error:[/bold red] File not found: {input_file}")
+        raise typer.Exit(1)
+
+    # Default output path
+    output_path = output or Path("output/unscheduled_streams.xlsx")
+
+    console.print(
+        f"\n[bold]Generating unscheduled streams report from:[/bold] {input_file.name}"
+    )
+
+    with console.status("[bold green]Generating Excel report..."):
+        result_path = generate_unscheduled_excel(
+            input_path=input_file,
+            output_path=output_path,
+        )
+
+    console.print(
+        f"\n[bold green]✓[/bold green] Report generated: {result_path}"
+    )
 
 
 if __name__ == "__main__":

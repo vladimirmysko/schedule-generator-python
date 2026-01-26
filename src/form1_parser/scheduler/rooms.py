@@ -23,8 +23,9 @@ class RoomManager:
     """Manages room assignments with priority-based selection.
 
     Priority order for finding rooms:
+    0. Instructor special rooms (is_special=True, highest priority)
     1. Subject-specific rooms (from subject-rooms.json)
-    2. Instructor room preferences (from instructor-rooms.json)
+    2. Instructor non-special room preferences (from instructor-rooms.json)
     3. Group building preferences (from group-buildings.json)
     4. General pool - find by capacity
     """
@@ -206,6 +207,19 @@ class RoomManager:
                     break
 
         return preferred_rooms
+
+    def _get_instructor_special_rooms(self, instructor: str, class_type: str) -> list[Room]:
+        """Get special rooms (is_special=True) preferred by an instructor.
+
+        Args:
+            instructor: Instructor name (cleaned)
+            class_type: Type of class ('lecture', 'practice', 'lab')
+
+        Returns:
+            List of Room objects that are both preferred by instructor and marked special
+        """
+        all_instructor_rooms = self._get_instructor_rooms(instructor, class_type)
+        return [r for r in all_instructor_rooms if r.is_special]
 
     def _parse_group_specialty(self, group_name: str) -> str:
         """Extract specialty prefix from group name.
@@ -474,6 +488,7 @@ class RoomManager:
         """Find a room for a stream with priority-based selection.
 
         Priority order:
+        0. Instructor special rooms (is_special=True, highest priority)
         1. Subject-specific rooms (from subject-rooms.json)
         2. Instructor room preferences (from instructor-rooms.json)
         3. Group building preferences (from group-buildings.json)
@@ -488,6 +503,21 @@ class RoomManager:
         Returns:
             Suitable Room or None if not found
         """
+        # 0. Instructor special rooms (highest priority)
+        clean_name = self._clean_instructor_name(stream.instructor)
+        special_rooms = self._get_instructor_special_rooms(clean_name, "lecture")
+        if special_rooms:
+            room = self._find_available_by_capacity(
+                special_rooms,
+                stream.student_count,
+                day,
+                slot,
+                week_type,
+                allow_special=True,
+            )
+            if room:
+                return room
+
         # 1. Subject-specific rooms (strict - no fallback if defined)
         if stream.subject in self.subject_rooms:
             allowed = self._get_subject_rooms(stream.subject, "lecture")
@@ -503,8 +533,7 @@ class RoomManager:
                 )
                 return room  # Returns room or None, no fallback to general pool
 
-        # 2. Instructor room preferences
-        clean_name = self._clean_instructor_name(stream.instructor)
+        # 2. Instructor non-special room preferences
         if clean_name in self.instructor_rooms:
             allowed = self._get_instructor_rooms(clean_name, "lecture")
             room = self._find_available_by_capacity(
@@ -550,6 +579,23 @@ class RoomManager:
             week_type: Week type to reserve
         """
         self.room_schedule[(day, slot, week_type)].add(room.name)
+
+    def release_room(
+        self,
+        room_name: str,
+        day: Day,
+        slot: int,
+        week_type: WeekType = WeekType.BOTH,
+    ) -> None:
+        """Release a previously reserved room (inverse of reserve_room()).
+
+        Args:
+            room_name: Name of the room to release
+            day: Day of the week
+            slot: Slot number
+            week_type: Week type to release
+        """
+        self.room_schedule[(day, slot, week_type)].discard(room_name)
 
     def is_room_available(
         self, room_name: str, day: Day, slot: int, week_type: WeekType = WeekType.BOTH
@@ -598,6 +644,7 @@ class RoomManager:
         """Find a room for a practical stream with priority-based selection.
 
         Priority order:
+        0. Instructor special rooms (is_special=True, highest priority)
         1. Subject-specific rooms for practicals (from subject-rooms.json)
         2. Instructor room preferences for practicals (from instructor-rooms.json)
         3. Group building preferences (from group-buildings.json)
@@ -612,6 +659,21 @@ class RoomManager:
         Returns:
             Suitable Room or None if not found
         """
+        # 0. Instructor special rooms (highest priority)
+        clean_name = self._clean_instructor_name(stream.instructor)
+        special_rooms = self._get_instructor_special_rooms(clean_name, "practice")
+        if special_rooms:
+            room = self._find_available_by_capacity(
+                special_rooms,
+                stream.student_count,
+                day,
+                slot,
+                week_type,
+                allow_special=True,
+            )
+            if room:
+                return room
+
         # 1. Subject-specific rooms for practicals (strict - no fallback if defined)
         if stream.subject in self.subject_rooms:
             allowed = self._get_subject_rooms(stream.subject, "practice")
@@ -627,8 +689,7 @@ class RoomManager:
                 )
                 return room  # Returns room or None, no fallback to general pool
 
-        # 2. Instructor room preferences for practicals
-        clean_name = self._clean_instructor_name(stream.instructor)
+        # 2. Instructor non-special room preferences for practicals
         if clean_name in self.instructor_rooms:
             allowed = self._get_instructor_rooms(clean_name, "practice")
             room = self._find_available_by_capacity(
@@ -672,6 +733,7 @@ class RoomManager:
         """Find a room for a Stage 3 practical stream with priority-based selection.
 
         Priority order:
+        0. Instructor special rooms (is_special=True, highest priority)
         1. Subject-specific rooms for practicals (from subject-rooms.json)
         2. Instructor room preferences for practicals (from instructor-rooms.json)
         3. Group building preferences (from group-buildings.json)
@@ -695,6 +757,22 @@ class RoomManager:
                 if not self._is_address_excluded_for_stream(stream.id, r.address)
             ]
 
+        # 0. Instructor special rooms (highest priority)
+        clean_name = self._clean_instructor_name(stream.instructor)
+        special_rooms = self._get_instructor_special_rooms(clean_name, "practice")
+        if special_rooms:
+            special_rooms = filter_excluded(special_rooms)
+            room = self._find_available_by_capacity(
+                special_rooms,
+                stream.student_count,
+                day,
+                slot,
+                week_type,
+                allow_special=True,
+            )
+            if room:
+                return room
+
         # 1. Subject-specific rooms for practicals (strict - no fallback if defined)
         if stream.subject in self.subject_rooms:
             allowed = self._get_subject_rooms(stream.subject, "practice")
@@ -710,8 +788,7 @@ class RoomManager:
                 )
                 return room  # Returns room or None, no fallback to general pool
 
-        # 2. Instructor room preferences for practicals
-        clean_name = self._clean_instructor_name(stream.instructor)
+        # 2. Instructor non-special room preferences for practicals
         if clean_name in self.instructor_rooms:
             allowed = self._get_instructor_rooms(clean_name, "practice")
             allowed = filter_excluded(allowed)
@@ -758,6 +835,7 @@ class RoomManager:
         """Find a room for a Stage 4 single-group lecture with priority-based selection.
 
         Priority order (same as Stage 1 lectures):
+        0. Instructor special rooms (is_special=True, highest priority)
         1. Subject-specific rooms (from subject-rooms.json)
         2. Instructor room preferences (from instructor-rooms.json)
         3. Group building preferences (from group-buildings.json)
@@ -772,6 +850,21 @@ class RoomManager:
         Returns:
             Suitable Room or None if not found
         """
+        # 0. Instructor special rooms (highest priority)
+        clean_name = self._clean_instructor_name(stream.instructor)
+        special_rooms = self._get_instructor_special_rooms(clean_name, "lecture")
+        if special_rooms:
+            room = self._find_available_by_capacity(
+                special_rooms,
+                stream.student_count,
+                day,
+                slot,
+                week_type,
+                allow_special=True,
+            )
+            if room:
+                return room
+
         # 1. Subject-specific rooms (strict - no fallback if defined)
         if stream.subject in self.subject_rooms:
             allowed = self._get_subject_rooms(stream.subject, "lecture")
@@ -787,8 +880,7 @@ class RoomManager:
                 )
                 return room  # Returns room or None, no fallback to general pool
 
-        # 2. Instructor room preferences
-        clean_name = self._clean_instructor_name(stream.instructor)
+        # 2. Instructor non-special room preferences
         if clean_name in self.instructor_rooms:
             allowed = self._get_instructor_rooms(clean_name, "lecture")
             room = self._find_available_by_capacity(
@@ -832,6 +924,7 @@ class RoomManager:
         """Find a room for a Stage 5 single-group practical with priority-based selection.
 
         Priority order (same as Stage 3 practicals):
+        0. Instructor special rooms (is_special=True, highest priority)
         1. Subject-specific rooms for practicals (from subject-rooms.json)
         2. Instructor room preferences for practicals (from instructor-rooms.json)
         3. Group building preferences (from group-buildings.json)
@@ -855,6 +948,22 @@ class RoomManager:
                 if not self._is_address_excluded_for_stream(stream.id, r.address)
             ]
 
+        # 0. Instructor special rooms (highest priority)
+        clean_name = self._clean_instructor_name(stream.instructor)
+        special_rooms = self._get_instructor_special_rooms(clean_name, "practice")
+        if special_rooms:
+            special_rooms = filter_excluded(special_rooms)
+            room = self._find_available_by_capacity(
+                special_rooms,
+                stream.student_count,
+                day,
+                slot,
+                week_type,
+                allow_special=True,
+            )
+            if room:
+                return room
+
         # 1. Subject-specific rooms for practicals (strict - no fallback if defined)
         if stream.subject in self.subject_rooms:
             allowed = self._get_subject_rooms(stream.subject, "practice")
@@ -870,8 +979,7 @@ class RoomManager:
                 )
                 return room  # Returns room or None, no fallback to general pool
 
-        # 2. Instructor room preferences for practicals
-        clean_name = self._clean_instructor_name(stream.instructor)
+        # 2. Instructor non-special room preferences for practicals
         if clean_name in self.instructor_rooms:
             allowed = self._get_instructor_rooms(clean_name, "practice")
             allowed = filter_excluded(allowed)
@@ -918,6 +1026,7 @@ class RoomManager:
         """Find a room for a Stage 6 lab stream with priority-based selection.
 
         Priority order (same as other stages but with 'lab' type):
+        0. Instructor special rooms (is_special=True, highest priority)
         1. Subject-specific rooms for labs (from subject-rooms.json)
         2. Instructor room preferences for labs (from instructor-rooms.json)
         3. Group building preferences (from group-buildings.json)
@@ -941,6 +1050,22 @@ class RoomManager:
                 if not self._is_address_excluded_for_stream(stream.id, r.address)
             ]
 
+        # 0. Instructor special rooms (highest priority)
+        clean_name = self._clean_instructor_name(stream.instructor)
+        special_rooms = self._get_instructor_special_rooms(clean_name, "lab")
+        if special_rooms:
+            special_rooms = filter_excluded(special_rooms)
+            room = self._find_available_by_capacity(
+                special_rooms,
+                stream.student_count,
+                day,
+                slot,
+                week_type,
+                allow_special=True,
+            )
+            if room:
+                return room
+
         # 1. Subject-specific rooms for labs (strict - no fallback if defined)
         if stream.subject in self.subject_rooms:
             allowed = self._get_subject_rooms(stream.subject, "lab")
@@ -956,8 +1081,7 @@ class RoomManager:
                 )
                 return room  # Returns room or None, no fallback to general pool
 
-        # 2. Instructor room preferences for labs
-        clean_name = self._clean_instructor_name(stream.instructor)
+        # 2. Instructor non-special room preferences for labs
         if clean_name in self.instructor_rooms:
             allowed = self._get_instructor_rooms(clean_name, "lab")
             allowed = filter_excluded(allowed)
