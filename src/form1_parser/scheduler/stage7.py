@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .conflicts import ConflictTracker
 from .constants import (
+    YEAR_SHIFT_MAP,
     Shift,
     get_slots_for_shift,
 )
@@ -29,6 +30,7 @@ from .models import (
 from .rooms import RoomManager
 from .utils import (
     clean_instructor_name,
+    determine_shift,
     load_second_shift_groups,
     parse_group_year,
     parse_subgroup_info,
@@ -303,36 +305,55 @@ class Stage7Scheduler:
         metrics.total_empty_group_days_before = self._count_total_empty_days(
             initial_analysis
         )
+        max_iterations = max(
+            self.MAX_PHASE7A_ITERATIONS, metrics.total_empty_group_days_before * 5
+        )
 
         # Iterative improvement
-        for iteration in range(self.MAX_PHASE7A_ITERATIONS):
+        for iteration in range(max_iterations):
             metrics.iterations = iteration + 1
 
             # Find groups with empty days
             analysis = self._analyze_group_schedules(assignments)
-            groups_with_empty = [
+            groups_needing_balance = [
                 (group, data)
                 for group, data in analysis.items()
-                if self._has_empty_days(data)
+                if self._group_needs_balance(group, data)
             ]
 
-            if not groups_with_empty:
+            if not groups_needing_balance:
                 break
+
+            groups_needing_balance.sort(
+                key=lambda item: self._group_priority_key(item[0], item[1])
+            )
 
             # Try to fix one empty day
             moved = False
-            for group, day_data in groups_with_empty:
+            for group, day_data in groups_needing_balance:
                 empty_days = [d for d, info in day_data.items() if info.is_empty]
                 overloaded_days = [
                     d for d, info in day_data.items() if info.is_overloaded
                 ]
 
-                if not empty_days:
-                    continue
+                if empty_days:
+                    target_days = empty_days
+                    source_days = (
+                        overloaded_days if overloaded_days else self.WORKING_DAYS
+                    )
+                else:
+                    min_count = min(info.slot_count for info in day_data.values())
+                    max_count = max(info.slot_count for info in day_data.values())
+                    target_days = [
+                        d for d, info in day_data.items() if info.slot_count == min_count
+                    ]
+                    source_days = [
+                        d for d, info in day_data.items() if info.slot_count == max_count
+                    ]
 
                 # Find a movable assignment
                 movable = self._find_movable_assignment(
-                    group, empty_days, overloaded_days, assignments
+                    group, target_days, source_days, assignments, analysis
                 )
 
                 if movable:
@@ -419,27 +440,63 @@ class Stage7Scheduler:
             total += sum(1 for info in day_data.values() if info.is_empty)
         return total
 
+    def _is_year4_group(self, base_group: str) -> bool:
+        return parse_group_year(base_group) == 4
+
+    def _is_year4_only_assignment(self, groups: list[str]) -> bool:
+        base_groups = {parse_subgroup_info(g)[0] for g in groups}
+        return base_groups != set() and all(self._is_year4_group(g) for g in base_groups)
+
+    def _group_priority_key(
+        self, base_group: str, day_data: dict[Day, GroupDayAnalysis]
+    ) -> tuple[int, int, int, str]:
+        empty_days = [day for day, info in day_data.items() if info.is_empty]
+        missing_thu_fri = sum(
+            1
+            for day in (Day.THURSDAY, Day.FRIDAY)
+            if day_data.get(day) and day_data[day].is_empty
+        )
+        spread = self._calculate_day_spread(day_data)
+        return (
+            0 if self._is_year4_group(base_group) else 1,
+            -len(empty_days),
+            -missing_thu_fri,
+            -spread,
+            base_group,
+        )
+
+    def _calculate_day_spread(self, day_data: dict[Day, GroupDayAnalysis]) -> int:
+        counts = [info.slot_count for info in day_data.values()]
+        return max(counts) - min(counts) if counts else 0
+
+    def _group_needs_balance(
+        self, base_group: str, day_data: dict[Day, GroupDayAnalysis]
+    ) -> bool:
+        if not self._is_year4_group(base_group):
+            return False
+        if self._has_empty_days(day_data):
+            return True
+        return self._calculate_day_spread(day_data) > 1
+
     def _find_movable_assignment(
         self,
         group: str,
-        empty_days: list[Day],
-        overloaded_days: list[Day],
+        target_days: list[Day],
+        source_days: list[Day],
         assignments: list[Assignment],
+        analysis: dict[str, dict[Day, GroupDayAnalysis]],
     ) -> MovableAssignment | None:
-        """Find an assignment that can be moved to fill an empty day.
+        """Find an assignment that can be moved to improve distribution.
 
         Args:
             group: Base group name with empty day
-            empty_days: List of days with no classes
-            overloaded_days: List of days with 6+ classes
+            target_days: Days to move into (empty or underloaded)
+            source_days: Days to move from (overloaded or overrepresented)
             assignments: All assignments
 
         Returns:
             MovableAssignment if found, None otherwise
         """
-        # Prioritize moving from overloaded days
-        source_days = overloaded_days if overloaded_days else self.WORKING_DAYS
-
         candidates: list[MovableAssignment] = []
 
         for assignment in assignments:
@@ -458,13 +515,18 @@ class Stage7Scheduler:
 
             # Skip multi-group streams where other groups might conflict
             if len(assignment.groups) > 1:
-                # More complex validation needed for multi-group
-                continue
+                if not self._is_year4_only_assignment(assignment.groups):
+                    continue
 
-            # Try to move to each empty day
-            for target_day in empty_days:
+            # Try to move to each target day
+            for target_day in target_days:
+                if not self._move_is_improvement(
+                    assignment, target_day, analysis
+                ):
+                    continue
                 movable = self._validate_move(assignment, target_day, assignments)
                 if movable:
+                    movable.move_score = self._score_move(movable, analysis)
                     candidates.append(movable)
 
         if not candidates:
@@ -472,6 +534,94 @@ class Stage7Scheduler:
 
         # Return the best candidate (highest move score)
         return max(candidates, key=lambda m: m.move_score)
+
+    def _move_is_improvement(
+        self,
+        assignment: Assignment,
+        target_day: Day,
+        analysis: dict[str, dict[Day, GroupDayAnalysis]],
+    ) -> bool:
+        """Ensure move improves balance and doesn't create new empty days."""
+        base_groups = {parse_subgroup_info(g)[0] for g in assignment.groups}
+        improvement_count = 0
+        worsened = False
+        for base in base_groups:
+            day_data = analysis.get(base)
+            if not day_data:
+                return False
+            source_info = day_data.get(assignment.day)
+            target_info = day_data.get(target_day)
+            if not source_info or not target_info:
+                return False
+            # Avoid making the source day empty for any affected group
+            if source_info.slot_count <= 1:
+                return False
+            if target_info.is_empty:
+                improvement_count += 1
+                continue
+
+            counts_by_day = {day: info.slot_count for day, info in day_data.items()}
+            current_counts = list(counts_by_day.values())
+            current_spread = max(current_counts) - min(current_counts)
+            counts_by_day[assignment.day] -= 1
+            counts_by_day[target_day] += 1
+            simulated_counts = list(counts_by_day.values())
+            simulated_spread = max(simulated_counts) - min(simulated_counts)
+            if simulated_spread < current_spread:
+                improvement_count += 1
+            elif simulated_spread > current_spread:
+                worsened = True
+
+        return improvement_count > 0 and not worsened
+
+    def _score_move(
+        self,
+        movable: MovableAssignment,
+        analysis: dict[str, dict[Day, GroupDayAnalysis]],
+    ) -> float:
+        assignment = movable.assignment
+        base_groups = {parse_subgroup_info(g)[0] for g in assignment.groups}
+        score = 0.0
+
+        for base in base_groups:
+            day_data = analysis.get(base)
+            if not day_data:
+                continue
+            if day_data[movable.target_day].is_empty:
+                score += 50.0
+                if self._is_year4_group(base):
+                    score += 40.0
+                    if movable.target_day in (Day.THURSDAY, Day.FRIDAY):
+                        score += 30.0
+            else:
+                current_spread = self._calculate_day_spread(day_data)
+                counts_by_day = {day: info.slot_count for day, info in day_data.items()}
+                counts_by_day[movable.source_day] -= 1
+                counts_by_day[movable.target_day] += 1
+                simulated_spread = max(counts_by_day.values()) - min(
+                    counts_by_day.values()
+                )
+                if simulated_spread < current_spread:
+                    score += (current_spread - simulated_spread) * 15.0
+
+        source_load = 0
+        for base in base_groups:
+            day_data = analysis.get(base)
+            if day_data:
+                source_load = max(source_load, day_data[movable.source_day].slot_count)
+        if source_load >= self.MAX_DAILY_LOAD:
+            score += 20.0
+
+        if movable.target_room:
+            if (
+                movable.target_room.name == assignment.room
+                and movable.target_room.address == assignment.room_address
+            ):
+                score += 15.0
+            elif movable.target_room.address == assignment.room_address:
+                score += 5.0
+
+        return score
 
     def _validate_move(
         self,
@@ -494,8 +644,7 @@ class Stage7Scheduler:
         week_type = assignment.week_type
 
         # Determine shift for this assignment
-        year = parse_group_year(groups[0]) if groups else 1
-        shift = Shift.SECOND if year == 2 else Shift.FIRST
+        shift = determine_shift(groups)
         if groups and groups[0] in self.second_shift_groups:
             shift = Shift.SECOND
 
@@ -605,16 +754,6 @@ class Stage7Scheduler:
             # All checks passed! Re-reserve the original slot and return the movable
             self._restore_original_slot(instructor, groups, assignment, room, week_type)
 
-            # Calculate move score (higher = better)
-            move_score = 100.0
-            # Bonus for moving from overloaded day
-            source_load = sum(
-                self.conflict_tracker.get_group_daily_load(g, assignment.day)
-                for g in groups
-            )
-            if source_load >= self.MAX_DAILY_LOAD:
-                move_score += 50.0
-
             return MovableAssignment(
                 assignment=assignment,
                 source_day=assignment.day,
@@ -622,7 +761,7 @@ class Stage7Scheduler:
                 target_day=target_day,
                 target_slot=target_slot,
                 target_room=room_available,
-                move_score=move_score,
+                move_score=0.0,
             )
 
         return None
@@ -833,8 +972,7 @@ class Stage7Scheduler:
             return None
 
         # Determine shift
-        year = parse_group_year(groups[0])
-        shift = Shift.SECOND if year == 2 else Shift.FIRST
+        shift = determine_shift(groups)
         if groups[0] in self.second_shift_groups:
             shift = Shift.SECOND
 
@@ -1184,7 +1322,8 @@ class Stage7Scheduler:
         # By shift
         for assignment in assignments:
             year = parse_group_year(assignment.groups[0]) if assignment.groups else 1
-            shift = "second" if year == 2 else "first"
+            computed_shift = YEAR_SHIFT_MAP.get(year, Shift.FIRST)
+            shift = computed_shift.value
             stats.by_shift[shift] = stats.by_shift.get(shift, 0) + 1
 
         # Room utilization by address

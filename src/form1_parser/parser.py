@@ -28,6 +28,7 @@ from .patterns import detect_pattern
 from .utils import (
     find_data_start_row,
     find_instructor_column,
+    forward_fill_student_counts,
     forward_fill_subject_names,
     safe_int,
     safe_str,
@@ -177,7 +178,9 @@ class Form1Parser:
                     "subject": safe_str(row.iloc[COL_SUBJECT]),
                     "group": safe_str(row.iloc[COL_GROUP]),
                     "language": safe_str(row.iloc[COL_LANGUAGE]),
-                    "students": safe_int(row.iloc[COL_STUDENTS]),
+                    "students": row.iloc[
+                        COL_STUDENTS
+                    ],  # Keep raw value for forward-fill
                     "lecture": safe_int(row.iloc[COL_LECTURES]),
                     "practical": safe_int(row.iloc[COL_PRACTICALS]),
                     "lab": safe_int(row.iloc[COL_LABS]),
@@ -188,7 +191,15 @@ class Form1Parser:
                 }
             )
 
-        return pd.DataFrame(working_data)
+        df = pd.DataFrame(working_data)
+
+        # Forward-fill student counts within same subject/group
+        df = forward_fill_student_counts(df)
+
+        # Convert students to int after forward-fill
+        df["students"] = df["students"].apply(lambda x: safe_int(x))
+
+        return df
 
     def _process_subject(
         self, subject_name: str, subject_data: pd.DataFrame, sheet_name: str
@@ -213,8 +224,12 @@ class Form1Parser:
         all_streams = extractor.extract(subject_data)
 
         # Separate by type
-        lecture_streams = [s for s in all_streams if s.stream_type == StreamType.LECTURE]
-        practical_streams = [s for s in all_streams if s.stream_type == StreamType.PRACTICAL]
+        lecture_streams = [
+            s for s in all_streams if s.stream_type == StreamType.LECTURE
+        ]
+        practical_streams = [
+            s for s in all_streams if s.stream_type == StreamType.PRACTICAL
+        ]
         lab_streams = [s for s in all_streams if s.stream_type == StreamType.LAB]
 
         return SubjectSummary(

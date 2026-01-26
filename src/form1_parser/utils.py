@@ -52,7 +52,9 @@ def find_data_start_row(df: pd.DataFrame, sheet_name: str) -> int:
         DataStartNotFoundError: If data start cannot be found
     """
     for idx, row in df.iterrows():
-        val = str(row.iloc[COL_NUMBER]).strip() if pd.notna(row.iloc[COL_NUMBER]) else ""
+        val = (
+            str(row.iloc[COL_NUMBER]).strip() if pd.notna(row.iloc[COL_NUMBER]) else ""
+        )
         if val in DATA_START_MARKERS:
             # If it's a semester marker, skip to next row
             if "семестр" in val.lower():
@@ -114,6 +116,98 @@ def forward_fill_subject_names(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def forward_fill_student_counts(
+    df: pd.DataFrame,
+    group_col: str = "group",
+    students_col: str = "students",
+    subject_col: str = "subject",
+) -> pd.DataFrame:
+    """Forward-fill student counts within same normalized group and subject.
+
+    For regular rows (no subgroup notation):
+    - Inherit student count from previous row with same subject and normalized group
+
+    For explicit subgroups (/1/, /2/, etc.):
+    - Divide base group's student count by number of subgroups
+    - If no base group exists, use the first subgroup's count as the total
+
+    Args:
+        df: DataFrame with group, students, and subject columns
+        group_col: Name of the group column
+        students_col: Name of the students column
+        subject_col: Name of the subject column
+
+    Returns:
+        DataFrame with forward-filled student counts
+    """
+    df = df.copy()
+
+    # First pass: collect base counts and count subgroups per (subject, base_group)
+    base_counts: dict[tuple[str, str], int] = {}
+    subgroup_counts: dict[tuple[str, str], set[str]] = {}
+    subgroup_first_count: dict[tuple[str, str], int] = {}
+
+    for idx in df.index:
+        subject = safe_str(df.at[idx, subject_col])
+        group = safe_str(df.at[idx, group_col])
+        students = df.at[idx, students_col]
+
+        if not group:
+            continue
+
+        normalized = normalize_group_name(group)
+        key = (subject, normalized)
+
+        if has_explicit_subgroup(group):
+            # Track unique subgroup names
+            if key not in subgroup_counts:
+                subgroup_counts[key] = set()
+            subgroup_counts[key].add(group)
+            # Track first subgroup's count (fallback when no base row exists)
+            if (
+                key not in subgroup_first_count
+                and not pd.isna(students)
+                and students != 0
+            ):
+                subgroup_first_count[key] = safe_int(students)
+        else:
+            # Track base group student count
+            if not pd.isna(students) and students != 0:
+                base_counts[key] = safe_int(students)
+
+    # Second pass: fill in values
+    last_counts: dict[tuple[str, str], int] = {}
+
+    for idx in df.index:
+        subject = safe_str(df.at[idx, subject_col])
+        group = safe_str(df.at[idx, group_col])
+        students = df.at[idx, students_col]
+
+        if not group:
+            continue
+
+        normalized = normalize_group_name(group)
+        key = (subject, normalized)
+
+        if has_explicit_subgroup(group):
+            # For subgroups: divide total count by number of subgroups
+            if key in subgroup_counts:
+                num_subgroups = len(subgroup_counts[key])
+                # Use base count if available, otherwise use first subgroup's count
+                total_count = base_counts.get(key) or subgroup_first_count.get(key)
+                if total_count:
+                    df.at[idx, students_col] = total_count // num_subgroups
+        else:
+            # For regular groups: forward-fill from previous same group
+            if pd.isna(students) or students == 0:
+                if key in last_counts:
+                    df.at[idx, students_col] = last_counts[key]
+            else:
+                last_counts[key] = safe_int(students)
+
+    return df
+
+
 def normalize_group_name(group_name: str) -> str:
     """Normalize a group name by removing subgroup notation.
 
@@ -171,7 +265,9 @@ def has_explicit_subgroup(group_name: str) -> bool:
     return bool(re.search(EXPLICIT_SUBGROUP_PATTERN, str(group_name)))
 
 
-def generate_stream_id(subject: str, stream_type: str, instructor: str, index: int) -> str:
+def generate_stream_id(
+    subject: str, stream_type: str, instructor: str, index: int
+) -> str:
     """Generate a unique stream ID.
 
     Args:

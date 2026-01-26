@@ -8,6 +8,7 @@ from form1_parser.utils import (
     calculate_weekly_hours,
     clean_instructor_name,
     extract_base_group,
+    forward_fill_student_counts,
     has_explicit_subgroup,
     normalize_group_name,
     safe_int,
@@ -189,3 +190,122 @@ class TestCleanInstructorName:
         """Test empty values."""
         assert clean_instructor_name("") == ""
         assert clean_instructor_name(None) == ""
+
+
+class TestForwardFillStudentCounts:
+    """Tests for forward_fill_student_counts function."""
+
+    def test_fills_nan_from_previous_same_group(self):
+        """Test that NaN student count is filled from previous row with same group."""
+        df = pd.DataFrame(
+            {
+                "subject": ["Math", "Math"],
+                "group": ["ВТИС-31 О", "ВТИС-31 О"],
+                "students": [24, pd.NA],
+            }
+        )
+        result = forward_fill_student_counts(df)
+        assert result.at[1, "students"] == 24
+
+    def test_fills_zero_from_previous_same_group(self):
+        """Test that 0 student count is filled from previous row with same group."""
+        df = pd.DataFrame(
+            {
+                "subject": ["Math", "Math"],
+                "group": ["ВТИС-31 О", "ВТИС-31 О"],
+                "students": [24, 0],
+            }
+        )
+        result = forward_fill_student_counts(df)
+        assert result.at[1, "students"] == 24
+
+    def test_does_not_fill_across_subjects(self):
+        """Test that student count is not inherited across different subjects."""
+        df = pd.DataFrame(
+            {
+                "subject": ["Math", "Physics"],
+                "group": ["ВТИС-31 О", "ВТИС-31 О"],
+                "students": [24, pd.NA],
+            }
+        )
+        result = forward_fill_student_counts(df)
+        assert pd.isna(result.at[1, "students"])
+
+    def test_subgroups_divide_student_count(self):
+        """Test that explicit subgroups get divided student count."""
+        df = pd.DataFrame(
+            {
+                "subject": ["Math", "Math", "Math"],
+                "group": ["ВТИС-31 О", "ВТИС-31 О /1/", "ВТИС-31 О /2/"],
+                "students": [24, pd.NA, pd.NA],
+            }
+        )
+        result = forward_fill_student_counts(df)
+        # 24 students / 2 subgroups = 12 each
+        assert result.at[1, "students"] == 12
+        assert result.at[2, "students"] == 12
+
+    def test_subgroups_no_base_row_uses_first_subgroup_count(self):
+        """Test that subgroups without base row use first subgroup's count."""
+        df = pd.DataFrame(
+            {
+                "subject": ["Math", "Math"],
+                "group": ["ВТИС-31 О /1/", "ВТИС-31 О /2/"],
+                "students": [24, pd.NA],
+            }
+        )
+        result = forward_fill_student_counts(df)
+        # 24 students from /1/ / 2 subgroups = 12 each
+        assert result.at[0, "students"] == 12
+        assert result.at[1, "students"] == 12
+
+    def test_subgroups_no_counts_at_all_stays_empty(self):
+        """Test that subgroups without any count stay empty."""
+        df = pd.DataFrame(
+            {
+                "subject": ["Math", "Math"],
+                "group": ["ВТИС-31 О /1/", "ВТИС-31 О /2/"],
+                "students": [pd.NA, pd.NA],
+            }
+        )
+        result = forward_fill_student_counts(df)
+        assert pd.isna(result.at[0, "students"])
+        assert pd.isna(result.at[1, "students"])
+
+    def test_different_groups_tracked_separately(self):
+        """Test that different groups maintain separate student counts."""
+        df = pd.DataFrame(
+            {
+                "subject": ["Math", "Math", "Math", "Math"],
+                "group": ["ВТИС-31 О", "ВТИС-32 О", "ВТИС-31 О", "ВТИС-32 О"],
+                "students": [24, 21, pd.NA, pd.NA],
+            }
+        )
+        result = forward_fill_student_counts(df)
+        assert result.at[2, "students"] == 24
+        assert result.at[3, "students"] == 21
+
+    def test_multiple_subjects_same_group(self):
+        """Test correct filling when same group appears in multiple subjects."""
+        df = pd.DataFrame(
+            {
+                "subject": ["Math", "Math", "Physics", "Physics"],
+                "group": ["ВТИС-31 О", "ВТИС-31 О", "ВТИС-31 О", "ВТИС-31 О"],
+                "students": [24, pd.NA, 20, pd.NA],
+            }
+        )
+        result = forward_fill_student_counts(df)
+        assert result.at[1, "students"] == 24
+        assert result.at[3, "students"] == 20
+
+    def test_empty_group_skipped(self):
+        """Test that rows with empty group are skipped."""
+        df = pd.DataFrame(
+            {
+                "subject": ["Math", "Math"],
+                "group": ["ВТИС-31 О", ""],
+                "students": [24, pd.NA],
+            }
+        )
+        result = forward_fill_student_counts(df)
+        assert pd.isna(result.at[1, "students"])
